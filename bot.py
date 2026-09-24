@@ -1,10 +1,10 @@
 """
-Телеграм-бот для записи клиентов к тренерам. v3 — кнопки, повторяющееся расписание,
-обмен контактами, редактирование профиля, фильтр по специальности.
+Телеграм-бот для записи клиентов к тренерам. v4 — у каждого клиента «свой» тренер.
 
-Любой человек может зарегистрироваться как тренер прямо в боте (/start -> "Я тренер").
+Тренер регистрируется командой /trainer и получает персональную ссылку («🔗 Моя ссылка»).
+Клиент, перешедший по этой ссылке, сразу привязывается к этому тренеру — никаких меню
+«я тренер / я клиент» и выбора из списка тренеров, у клиента всегда одно простое меню.
 Тренер добавляет свободное время вручную или сразу на много недель вперёд («🔁 Еженедельно»).
-Клиенты выбирают направление (если тренеров много), тренера, день и время и бронируют в клик.
 Бот сам шлёт клиенту напоминания за 24 часа и за 1 час до тренировки, а после записи
 тренер и клиент видят контакты друг друга.
 """
@@ -17,7 +17,7 @@ from html import escape
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -94,20 +94,20 @@ def trainer_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="➕ Добавить время"), KeyboardButton(text="🔁 Еженедельно")],
             [KeyboardButton(text="📋 Мои записи"), KeyboardButton(text="⚙️ Профиль")],
-            [KeyboardButton(text="🙋 Я как клиент")],
+            [KeyboardButton(text="🔗 Моя ссылка")],
         ],
         resize_keyboard=True,
     )
 
 
-def client_menu(is_trainer_too: bool = False) -> ReplyKeyboardMarkup:
-    keyboard = [
-        [KeyboardButton(text="🔍 Записаться")],
-        [KeyboardButton(text="🗓 Мои записи")],
-    ]
-    if is_trainer_too:
-        keyboard.append([KeyboardButton(text="🧑‍🏫 Кабинет тренера")])
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+def client_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔍 Записаться")],
+            [KeyboardButton(text="🗓 Мои записи")],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def next_14_days() -> list[str]:
@@ -171,8 +171,9 @@ async def get_contact_line(trainer_id: int) -> str:
 # ---------- /start, /help и регистрация тренера ----------
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message, state: FSMContext, command: CommandObject):
     await state.clear()
+
     trainer = db.get_trainer(message.from_user.id)
     if trainer:
         await message.answer(
@@ -183,19 +184,50 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         return
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🧑‍🏫 Я тренер", callback_data="role:trainer")],
-            [InlineKeyboardButton(text="🙋 Хочу записаться на тренировку", callback_data="role:client")],
-        ]
-    )
+    # Клиент: определяем "своего" тренера — по персональной ссылке,
+    # по уже существующей привязке или по прошлым записям.
+    trainer_id = None
+    payload = (command.args or "").strip()
+    if payload.isdigit() and db.get_trainer(int(payload)):
+        trainer_id = int(payload)
+    if trainer_id is None:
+        trainer_id = db.get_client_trainer(message.from_user.id)
+    if trainer_id is None:
+        bookings = db.list_client_bookings(message.from_user.id)
+        if bookings:
+            trainer_id = bookings[0]["trainer_id"]
+        elif len(db.list_trainers()) == 1:
+            trainer_id = db.list_trainers()[0]["id"]
+
+    if trainer_id is None:
+        await message.answer(
+            "👋 <b>Привет!</b>\n\n"
+            "Похоже, у тебя нет ссылки от тренера — попроси у него персональную ссылку "
+            "на этого бота, и всё будет готово за секунду.\n\n"
+            "Если ты сам тренер и хочешь завести здесь расписание — напиши /trainer."
+        )
+        return
+
+    db.link_client(message.from_user.id, trainer_id, message.from_user.full_name, message.from_user.username)
+    bound_trainer = db.get_trainer(trainer_id)
     await message.answer(
-        "👋 <b>Привет! Это бот для записи на тренировки.</b>\n\n"
-        "🧑‍🏫 Тренеры ведут здесь расписание и получают записи автоматически.\n"
-        "🙋 Клиенты в пару кликов выбирают время и записываются.\n\n"
-        "Кто ты?",
-        reply_markup=kb,
+        f"👋 <b>Привет!</b> Это бот записи к тренеру <b>{esc(bound_trainer['name'])}</b>.\n"
+        f"Выбирай, что нужно 👇 (подсказка — команда /help)",
+        reply_markup=client_menu(),
     )
+
+
+@dp.message(Command("trainer"))
+async def cmd_become_trainer(message: Message, state: FSMContext):
+    trainer = db.get_trainer(message.from_user.id)
+    if trainer:
+        await message.answer(
+            f"Ты уже тренер, <b>{esc(trainer['name'])}</b> 🙂", reply_markup=trainer_menu()
+        )
+        return
+    await state.clear()
+    await message.answer("🧑‍🏫 Заводим тебе кабинет тренера. Как тебя подписывать клиентам? Напиши имя.")
+    await state.set_state(TrainerOnboarding.waiting_name)
 
 
 @dp.message(Command("help"))
@@ -209,37 +241,18 @@ async def cmd_help(message: Message):
             f"сразу на {RECUR_WEEKS} недель вперёд\n"
             "📋 <b>Мои записи</b> — все слоты, занятые и свободные; нажми, чтобы отменить\n"
             "⚙️ <b>Профиль</b> — изменить имя или специальность\n"
-            "🙋 <b>Я как клиент</b> — записаться к другому тренеру самому\n\n"
+            "🔗 <b>Моя ссылка</b> — персональная ссылка для клиентов\n\n"
             "Когда клиент бронирует время, тебе приходит уведомление с его контактом.",
             reply_markup=trainer_menu(),
         )
     else:
         await message.answer(
             "🙋 <b>Как пользоваться ботом</b>\n\n"
-            "🔍 <b>Записаться</b> — выбрать направление, тренера, день и время\n"
+            "🔍 <b>Записаться</b> — выбрать день и время у своего тренера\n"
             "🗓 <b>Мои записи</b> — твои записи; нажми, чтобы отменить\n\n"
             "Бот сам напомнит о тренировке за 24 часа и за час до неё.\n"
-            "Если ты сам тренер — напиши /start и выбери «Я тренер».",
-            reply_markup=client_menu(is_trainer_too=False),
+            "Если ты сам тренер — напиши /trainer.",
         )
-
-
-@dp.callback_query(F.data == "role:client")
-async def cb_role_client(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("🙋 Отлично, вот твоё меню!")
-    await callback.message.answer(
-        "Выбирай, что нужно 👇 (подсказка — команда /help)",
-        reply_markup=client_menu(is_trainer_too=db.is_trainer(callback.from_user.id)),
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "role:trainer")
-async def cb_role_trainer(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🧑‍🏫 Как тебя подписывать клиентам? Напиши имя.")
-    await state.set_state(TrainerOnboarding.waiting_name)
-    await callback.answer()
 
 
 @dp.message(StateFilter(TrainerOnboarding.waiting_name))
@@ -256,30 +269,25 @@ async def onb_specialty(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"🎉 Готово, <b>{esc(data['name'])}</b>! Профиль тренера создан.\n"
-        f"Теперь добавь свободное время — «➕ Добавить время» или сразу «🔁 Еженедельно», "
-        f"если расписание повторяется.",
+        f"1️⃣ Добавь свободное время — «➕ Добавить время» или сразу «🔁 Еженедельно».\n"
+        f"2️⃣ Возьми «🔗 Моя ссылка» и отправь её своим клиентам — они сразу попадут "
+        f"в твоё расписание, без лишних меню.",
         reply_markup=trainer_menu(),
     )
 
 
-# ---------- Тренер: переключение в клиентский режим ----------
+# ---------- Тренер: персональная ссылка для клиентов ----------
 
-@dp.message(F.text == "🙋 Я как клиент")
-async def to_client_mode(message: Message):
-    await message.answer(
-        "🙋 Клиентское меню:",
-        reply_markup=client_menu(is_trainer_too=True),
-    )
-
-
-@dp.message(F.text == "🧑‍🏫 Кабинет тренера")
-async def to_trainer_mode(message: Message):
+@dp.message(F.text == "🔗 Моя ссылка")
+async def trainer_link(message: Message):
     trainer = db.get_trainer(message.from_user.id)
     if not trainer:
         return
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start={message.from_user.id}"
     await message.answer(
-        f"🧑‍🏫 С возвращением, <b>{esc(trainer['name'])}</b>!",
-        reply_markup=trainer_menu(),
+        f"🔗 <b>Твоя персональная ссылка для клиентов:</b>\n{link}\n\n"
+        f"Кто перейдёт по ней — сразу попадёт в твоё расписание, выбирать тренера не нужно."
     )
 
 
@@ -551,70 +559,15 @@ async def trainer_cancel_slot(callback: CallbackQuery):
             logger.warning("Не удалось уведомить клиента %s", slot["client_id"])
 
 
-# ---------- Клиент: выбор направления и тренера ----------
+# ---------- Клиент: запись к своему тренеру ----------
 
 @dp.message(F.text == "🔍 Записаться")
-async def client_pick_trainer(message: Message):
-    trainers = db.list_trainers()
-    if not trainers:
-        await message.answer("Пока нет ни одного тренера в системе 😔")
+async def client_book(message: Message):
+    trainer_id = db.get_client_trainer(message.from_user.id)
+    if not trainer_id or not db.get_trainer(trainer_id):
+        await message.answer("Не нашёл твоего тренера 🤔 Напиши /start ещё раз по ссылке от тренера.")
         return
-    specialties = db.list_specialties()
-    if len(trainers) <= 1 or len(specialties) <= 1:
-        await send_trainer_list(message.chat.id, trainers)
-        return
-    kb_rows = [
-        [InlineKeyboardButton(text=f"🏷 {s}", callback_data=f"pickspec:{i}")]
-        for i, s in enumerate(specialties)
-    ]
-    kb_rows.append([InlineKeyboardButton(text="👥 Все тренеры", callback_data="pickspec:all")])
-    await message.answer(
-        "По какому направлению ищешь тренера?", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows)
-    )
-
-
-@dp.callback_query(F.data.startswith("pickspec:"))
-async def client_specialty_picked(callback: CallbackQuery):
-    val = callback.data.split(":", 1)[1]
-    if val == "all":
-        trainers = db.list_trainers()
-    else:
-        specialties = db.list_specialties()
-        idx = int(val)
-        if idx >= len(specialties):
-            await callback.answer("Список обновился, попробуй ещё раз.", show_alert=True)
-            return
-        trainers = db.list_trainers_by_specialty(specialties[idx])
-    await callback.message.delete()
-    await send_trainer_list(callback.message.chat.id, trainers)
-    await callback.answer()
-
-
-async def send_trainer_list(chat_id: int, trainers):
-    if not trainers:
-        await bot.send_message(chat_id, "Тренеров с таким направлением пока нет 😔")
-        return
-    if len(trainers) == 1:
-        await show_days(chat_id, trainers[0]["id"])
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text=f"🧑‍🏫 {t['name']} ({t['specialty']})" if t["specialty"] else f"🧑‍🏫 {t['name']}",
-                callback_data=f"picktrainer:{t['id']}",
-            )]
-            for t in trainers
-        ]
-    )
-    await bot.send_message(chat_id, "Выбери тренера 👇", reply_markup=kb)
-
-
-@dp.callback_query(F.data.startswith("picktrainer:"))
-async def client_trainer_picked(callback: CallbackQuery):
-    trainer_id = int(callback.data.split(":")[1])
-    await callback.message.delete()
-    await show_days(callback.message.chat.id, trainer_id)
-    await callback.answer()
+    await show_days(message.chat.id, trainer_id)
 
 
 async def show_days(chat_id: int, trainer_id: int):

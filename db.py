@@ -53,6 +53,17 @@ def init_db():
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_slot ON slots(trainer_id, slot_dt)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY,          -- telegram user id клиента
+                trainer_id INTEGER NOT NULL,     -- "свой" тренер, к которому клиент привязан
+                name TEXT,
+                username TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         # Миграции для более старых баз (например, на Railway после обновления кода)
         _ensure_column(conn, "slots", "client_username", "TEXT")
 
@@ -104,6 +115,23 @@ def list_trainers_by_specialty(specialty: str):
         return conn.execute(
             "SELECT * FROM trainers WHERE specialty=? ORDER BY name", (specialty,)
         ).fetchall()
+
+
+# ---------- Привязка клиента к "своему" тренеру ----------
+
+def link_client(client_id: int, trainer_id: int, name: str | None = None, username: str | None = None):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO clients (id, trainer_id, name, username, created_at) "
+            "VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM clients WHERE id=?), ?))",
+            (client_id, trainer_id, name, username, client_id, datetime.now().isoformat()),
+        )
+
+
+def get_client_trainer(client_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT trainer_id FROM clients WHERE id=?", (client_id,)).fetchone()
+    return row["trainer_id"] if row else None
 
 
 # ---------- Слоты ----------
