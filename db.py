@@ -1,4 +1,4 @@
-"""Слой работы с базой данных (SQLite). v2: несколько тренеров."""
+"""Слой работы с базой данных (SQLite). v3: контакты, редактирование профиля, специальности."""
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -15,6 +15,12 @@ def get_conn():
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_column(conn, table: str, column: str, coltype: str):
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
 
 
 def init_db():
@@ -47,6 +53,8 @@ def init_db():
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_slot ON slots(trainer_id, slot_dt)"
         )
+        # Миграции для более старых баз (например, на Railway после обновления кода)
+        _ensure_column(conn, "slots", "client_username", "TEXT")
 
 
 # ---------- Тренеры ----------
@@ -58,6 +66,14 @@ def register_trainer(trainer_id: int, name: str, specialty: str = ""):
             "VALUES (?, ?, ?, COALESCE((SELECT created_at FROM trainers WHERE id=?), ?))",
             (trainer_id, name, specialty, trainer_id, datetime.now().isoformat()),
         )
+
+
+def update_trainer_profile(trainer_id: int, name: str | None = None, specialty: str | None = None):
+    with get_conn() as conn:
+        if name is not None:
+            conn.execute("UPDATE trainers SET name=? WHERE id=?", (name, trainer_id))
+        if specialty is not None:
+            conn.execute("UPDATE trainers SET specialty=? WHERE id=?", (specialty, trainer_id))
 
 
 def get_trainer(trainer_id: int):
@@ -72,6 +88,22 @@ def is_trainer(user_id: int) -> bool:
 def list_trainers():
     with get_conn() as conn:
         return conn.execute("SELECT * FROM trainers ORDER BY name").fetchall()
+
+
+def list_specialties():
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT specialty FROM trainers "
+            "WHERE specialty IS NOT NULL AND TRIM(specialty) != '' ORDER BY specialty"
+        ).fetchall()
+    return [r["specialty"] for r in rows]
+
+
+def list_trainers_by_specialty(specialty: str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM trainers WHERE specialty=? ORDER BY name", (specialty,)
+        ).fetchall()
 
 
 # ---------- Слоты ----------
@@ -124,12 +156,12 @@ def get_slot(slot_id: int):
         return conn.execute("SELECT * FROM slots WHERE id=?", (slot_id,)).fetchone()
 
 
-def book_slot(slot_id: int, client_id: int, client_name: str) -> bool:
+def book_slot(slot_id: int, client_id: int, client_name: str, client_username: str | None = None) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE slots SET status='booked', client_id=?, client_name=? "
+            "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=? "
             "WHERE id=? AND status='free'",
-            (client_id, client_name, slot_id),
+            (client_id, client_name, client_username, slot_id),
         )
         return cur.rowcount > 0
 
@@ -143,7 +175,7 @@ def cancel_slot(slot_id: int) -> bool:
 def free_up_slot(slot_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE slots SET status='free', client_id=NULL, client_name=NULL, "
+            "UPDATE slots SET status='free', client_id=NULL, client_name=NULL, client_username=NULL, "
             "reminder_24h_sent=0, reminder_1h_sent=0 WHERE id=?",
             (slot_id,),
         )

@@ -1,10 +1,12 @@
 """
-Телеграм-бот для записи клиентов к тренерам. v2 — полностью на кнопках.
+Телеграм-бот для записи клиентов к тренерам. v3 — кнопки, повторяющееся расписание,
+обмен контактами, редактирование профиля, фильтр по специальности.
 
 Любой человек может зарегистрироваться как тренер прямо в боте (/start -> "Я тренер").
-Тренер добавляет свободное время через кнопки (день -> время).
-Клиенты выбирают тренера (если их несколько), день и время и бронируют в один клик.
-Бот сам шлёт клиенту напоминания за 24 часа и за 1 час до тренировки.
+Тренер добавляет свободное время вручную или сразу на много недель вперёд («🔁 Еженедельно»).
+Клиенты выбирают направление (если тренеров много), тренера, день и время и бронируют в клик.
+Бот сам шлёт клиенту напоминания за 24 часа и за 1 час до тренировки, а после записи
+тренер и клиент видят контакты друг друга.
 """
 import asyncio
 import logging
@@ -47,6 +49,7 @@ MONTHS_RU = ["", "января", "февраля", "марта", "апреля",
              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
 QUICK_TIMES = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00",
                "16:00", "17:00", "18:00", "19:00", "20:00"]
+RECUR_WEEKS = 8  # на сколько недель вперёд генерировать повторяющееся расписание
 
 
 # ---------- FSM состояния ----------
@@ -58,6 +61,16 @@ class TrainerOnboarding(StatesGroup):
 
 class AddSlot(StatesGroup):
     waiting_custom_time = State()
+
+
+class RecurSchedule(StatesGroup):
+    picking_days = State()
+    waiting_custom_time = State()
+
+
+class EditProfile(StatesGroup):
+    waiting_name = State()
+    waiting_specialty = State()
 
 
 # ---------- Утилиты ----------
@@ -79,8 +92,9 @@ def fmt_slot(slot_dt: str) -> str:
 def trainer_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ Добавить время")],
-            [KeyboardButton(text="📋 Мои записи"), KeyboardButton(text="🙋 Я как клиент")],
+            [KeyboardButton(text="➕ Добавить время"), KeyboardButton(text="🔁 Еженедельно")],
+            [KeyboardButton(text="📋 Мои записи"), KeyboardButton(text="⚙️ Профиль")],
+            [KeyboardButton(text="🙋 Я как клиент")],
         ],
         resize_keyboard=True,
     )
@@ -100,7 +114,61 @@ def next_14_days() -> list[str]:
     return [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(14)]
 
 
-# ---------- /start и регистрация тренера ----------
+def weekday_picker_kb(selected: list[int]) -> InlineKeyboardMarkup:
+    day_buttons = [
+        InlineKeyboardButton(
+            text=(f"✅ {DAYS_RU[i]}" if i in selected else DAYS_RU[i]),
+            callback_data=f"recday:{i}",
+        )
+        for i in range(7)
+    ]
+    rows = [day_buttons[0:4], day_buttons[4:7]]
+    rows.append([
+        InlineKeyboardButton(text="➡️ Дальше", callback_data="recnext"),
+        InlineKeyboardButton(text="✖️ Отмена", callback_data="reccancel"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def generate_recurring_slots(trainer_id: int, selected_days: list[int], hh: int, mm: int) -> tuple[int, int]:
+    """Создаёт конкретные слоты на RECUR_WEEKS недель вперёд для выбранных дней недели."""
+    today = datetime.now().date()
+    added = skipped = 0
+    for wd in selected_days:
+        delta = (wd - today.weekday()) % 7
+        base = today + timedelta(days=delta)
+        for week in range(RECUR_WEEKS):
+            d = base + timedelta(weeks=week)
+            slot_dt = f"{d:%Y-%m-%d} {hh:02d}:{mm:02d}"
+            if db.add_slot(trainer_id, slot_dt):
+                added += 1
+            else:
+                skipped += 1
+    return added, skipped
+
+
+def recur_summary(selected_days: list[int], hh: int, mm: int, added: int, skipped: int) -> str:
+    days_label = ", ".join(DAYS_RU[i] for i in selected_days)
+    text = (
+        f"✅ Добавил <b>{added}</b> тренировок: {days_label} в <b>{hh:02d}:{mm:02d}</b> "
+        f"на ближайшие {RECUR_WEEKS} недель."
+    )
+    if skipped:
+        text += f"\n<i>({skipped} слотов уже были добавлены ранее)</i>"
+    return text
+
+
+async def get_contact_line(trainer_id: int) -> str:
+    try:
+        chat = await bot.get_chat(trainer_id)
+        if chat.username:
+            return f"\n💬 Связаться с тренером: @{chat.username}"
+    except Exception:
+        logger.warning("Не удалось получить контакт тренера %s", trainer_id)
+    return ""
+
+
+# ---------- /start, /help и регистрация тренера ----------
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
@@ -109,7 +177,8 @@ async def cmd_start(message: Message, state: FSMContext):
     if trainer:
         await message.answer(
             f"С возвращением, <b>{esc(trainer['name'])}</b>! 👋\n"
-            f"Это твой кабинет тренера — отсюда управляешь расписанием.",
+            f"Это твой кабинет тренера — отсюда управляешь расписанием.\n"
+            f"Команда /help — если нужна подсказка.",
             reply_markup=trainer_menu(),
         )
         return
@@ -129,12 +198,38 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    trainer = db.get_trainer(message.from_user.id)
+    if trainer:
+        await message.answer(
+            "🧑‍🏫 <b>Как пользоваться боту-тренеру</b>\n\n"
+            "➕ <b>Добавить время</b> — одна тренировка на конкретный день\n"
+            "🔁 <b>Еженедельно</b> — повторяющееся расписание (например, Пн/Ср/Пт в одно время) "
+            f"сразу на {RECUR_WEEKS} недель вперёд\n"
+            "📋 <b>Мои записи</b> — все слоты, занятые и свободные; нажми, чтобы отменить\n"
+            "⚙️ <b>Профиль</b> — изменить имя или специальность\n"
+            "🙋 <b>Я как клиент</b> — записаться к другому тренеру самому\n\n"
+            "Когда клиент бронирует время, тебе приходит уведомление с его контактом.",
+            reply_markup=trainer_menu(),
+        )
+    else:
+        await message.answer(
+            "🙋 <b>Как пользоваться ботом</b>\n\n"
+            "🔍 <b>Записаться</b> — выбрать направление, тренера, день и время\n"
+            "🗓 <b>Мои записи</b> — твои записи; нажми, чтобы отменить\n\n"
+            "Бот сам напомнит о тренировке за 24 часа и за час до неё.\n"
+            "Если ты сам тренер — напиши /start и выбери «Я тренер».",
+            reply_markup=client_menu(is_trainer_too=False),
+        )
+
+
 @dp.callback_query(F.data == "role:client")
 async def cb_role_client(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("🙋 Отлично, вот твоё меню!")
     await callback.message.answer(
-        "Выбирай, что нужно 👇",
+        "Выбирай, что нужно 👇 (подсказка — команда /help)",
         reply_markup=client_menu(is_trainer_too=db.is_trainer(callback.from_user.id)),
     )
     await callback.answer()
@@ -161,7 +256,8 @@ async def onb_specialty(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"🎉 Готово, <b>{esc(data['name'])}</b>! Профиль тренера создан.\n"
-        f"Теперь добавь свободное время — нажми «➕ Добавить время».",
+        f"Теперь добавь свободное время — «➕ Добавить время» или сразу «🔁 Еженедельно», "
+        f"если расписание повторяется.",
         reply_markup=trainer_menu(),
     )
 
@@ -187,7 +283,59 @@ async def to_trainer_mode(message: Message):
     )
 
 
-# ---------- Тренер: добавление слотов ----------
+# ---------- Тренер: профиль ----------
+
+@dp.message(F.text == "⚙️ Профиль")
+async def trainer_profile(message: Message):
+    trainer = db.get_trainer(message.from_user.id)
+    if not trainer:
+        return
+    specialty = trainer["specialty"] or "не указана"
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Изменить имя", callback_data="editname")],
+            [InlineKeyboardButton(text="✏️ Изменить специальность", callback_data="editspecialty")],
+        ]
+    )
+    await message.answer(
+        f"⚙️ <b>Твой профиль</b>\n"
+        f"Имя: <b>{esc(trainer['name'])}</b>\n"
+        f"Специальность: <b>{esc(specialty)}</b>",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data == "editname")
+async def edit_name_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(EditProfile.waiting_name)
+    await callback.message.edit_text("✏️ Напиши новое имя:")
+    await callback.answer()
+
+
+@dp.message(StateFilter(EditProfile.waiting_name))
+async def edit_name_finish(message: Message, state: FSMContext):
+    new_name = message.text.strip()
+    db.update_trainer_profile(message.from_user.id, name=new_name)
+    await state.clear()
+    await message.answer(f"✅ Имя обновлено: <b>{esc(new_name)}</b>", reply_markup=trainer_menu())
+
+
+@dp.callback_query(F.data == "editspecialty")
+async def edit_specialty_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(EditProfile.waiting_specialty)
+    await callback.message.edit_text("✏️ Напиши новую специальность:")
+    await callback.answer()
+
+
+@dp.message(StateFilter(EditProfile.waiting_specialty))
+async def edit_specialty_finish(message: Message, state: FSMContext):
+    new_specialty = message.text.strip()
+    db.update_trainer_profile(message.from_user.id, specialty=new_specialty)
+    await state.clear()
+    await message.answer(f"✅ Специальность обновлена: <b>{esc(new_specialty)}</b>", reply_markup=trainer_menu())
+
+
+# ---------- Тренер: добавление одного слота ----------
 
 @dp.message(F.text == "➕ Добавить время")
 async def add_slot_pick_day(message: Message):
@@ -259,6 +407,103 @@ async def add_slot_custom_finish(message: Message, state: FSMContext):
         await message.answer("⚠️ Такое время уже было добавлено ранее.", reply_markup=trainer_menu())
 
 
+# ---------- Тренер: повторяющееся расписание ----------
+
+@dp.message(F.text == "🔁 Еженедельно")
+async def recur_start(message: Message, state: FSMContext):
+    if not db.is_trainer(message.from_user.id):
+        return
+    await state.set_state(RecurSchedule.picking_days)
+    await state.update_data(selected_days=[])
+    await message.answer(
+        "🔁 <b>Еженедельное расписание</b>\n"
+        "Выбери дни недели, когда у тебя тренировки (можно несколько), потом жми «Дальше»:",
+        reply_markup=weekday_picker_kb([]),
+    )
+
+
+@dp.callback_query(F.data.startswith("recday:"), StateFilter(RecurSchedule.picking_days))
+async def recur_toggle_day(callback: CallbackQuery, state: FSMContext):
+    idx = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    selected = set(data.get("selected_days", []))
+    if idx in selected:
+        selected.discard(idx)
+    else:
+        selected.add(idx)
+    selected = sorted(selected)
+    await state.update_data(selected_days=selected)
+    await callback.message.edit_reply_markup(reply_markup=weekday_picker_kb(selected))
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "reccancel")
+async def recur_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("Отменено. Можно начать заново через «🔁 Еженедельно».")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "recnext", StateFilter(RecurSchedule.picking_days))
+async def recur_pick_time(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = data.get("selected_days", [])
+    if not selected:
+        await callback.answer("Выбери хотя бы один день.", show_alert=True)
+        return
+    buttons = [InlineKeyboardButton(text=t, callback_data=f"rectime:{t}") for t in QUICK_TIMES]
+    rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+    rows.append([InlineKeyboardButton(text="✏️ Своё время", callback_data="rectcustom")])
+    rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="reccancel")])
+    days_label = ", ".join(DAYS_RU[i] for i in selected)
+    await callback.message.edit_text(
+        f"🔁 <b>{days_label}</b> — во сколько?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("rectime:"))
+async def recur_finish(callback: CallbackQuery, state: FSMContext):
+    time_str = callback.data.split(":", 1)[1]
+    hh, mm = map(int, time_str.split(":"))
+    data = await state.get_data()
+    selected = data.get("selected_days", [])
+    await state.clear()
+    if not selected:
+        await callback.answer("Что-то пошло не так, начни заново.", show_alert=True)
+        return
+    added, skipped = generate_recurring_slots(callback.from_user.id, selected, hh, mm)
+    await callback.message.edit_text(recur_summary(selected, hh, mm, added, skipped))
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "rectcustom")
+async def recur_custom_time_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(RecurSchedule.waiting_custom_time)
+    await callback.message.edit_text("✏️ Напиши время в формате ЧЧ:ММ, например <b>13:30</b>")
+    await callback.answer()
+
+
+@dp.message(StateFilter(RecurSchedule.waiting_custom_time))
+async def recur_custom_time_finish(message: Message, state: FSMContext):
+    text = message.text.strip()
+    try:
+        hh, mm = map(int, text.split(":"))
+        assert 0 <= hh < 24 and 0 <= mm < 60
+    except Exception:
+        await message.answer("🤔 Не понял время. Формат ЧЧ:ММ, например <b>13:30</b>")
+        return
+    data = await state.get_data()
+    selected = data.get("selected_days", [])
+    await state.clear()
+    if not selected:
+        await message.answer("Что-то пошло не так, начни заново через «🔁 Еженедельно».", reply_markup=trainer_menu())
+        return
+    added, skipped = generate_recurring_slots(message.from_user.id, selected, hh, mm)
+    await message.answer(recur_summary(selected, hh, mm, added, skipped), reply_markup=trainer_menu())
+
+
 # ---------- Тренер: мои записи ----------
 
 @dp.message(F.text == "📋 Мои записи")
@@ -268,13 +513,14 @@ async def trainer_my_slots(message: Message):
     rows = db.list_all_upcoming(message.from_user.id)
     if not rows:
         await message.answer(
-            "Пока нет ни одного слота 🗓\nДобавь через «➕ Добавить время»."
+            "Пока нет ни одного слота 🗓\nДобавь через «➕ Добавить время» или «🔁 Еженедельно»."
         )
         return
     kb_rows = []
     for r in rows:
         if r["status"] == "booked":
-            label = f"🔴 {fmt_slot(r['slot_dt'])} — {r['client_name']}"
+            contact = f" (@{r['client_username']})" if r["client_username"] else ""
+            label = f"🔴 {fmt_slot(r['slot_dt'])} — {r['client_name']}{contact}"
         else:
             label = f"🟢 {fmt_slot(r['slot_dt'])} — свободно"
         kb_rows.append([InlineKeyboardButton(text=f"❌ {label}", callback_data=f"trainercancel:{r['id']}")])
@@ -305,7 +551,7 @@ async def trainer_cancel_slot(callback: CallbackQuery):
             logger.warning("Не удалось уведомить клиента %s", slot["client_id"])
 
 
-# ---------- Клиент: запись ----------
+# ---------- Клиент: выбор направления и тренера ----------
 
 @dp.message(F.text == "🔍 Записаться")
 async def client_pick_trainer(message: Message):
@@ -313,8 +559,43 @@ async def client_pick_trainer(message: Message):
     if not trainers:
         await message.answer("Пока нет ни одного тренера в системе 😔")
         return
+    specialties = db.list_specialties()
+    if len(trainers) <= 1 or len(specialties) <= 1:
+        await send_trainer_list(message.chat.id, trainers)
+        return
+    kb_rows = [
+        [InlineKeyboardButton(text=f"🏷 {s}", callback_data=f"pickspec:{i}")]
+        for i, s in enumerate(specialties)
+    ]
+    kb_rows.append([InlineKeyboardButton(text="👥 Все тренеры", callback_data="pickspec:all")])
+    await message.answer(
+        "По какому направлению ищешь тренера?", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    )
+
+
+@dp.callback_query(F.data.startswith("pickspec:"))
+async def client_specialty_picked(callback: CallbackQuery):
+    val = callback.data.split(":", 1)[1]
+    if val == "all":
+        trainers = db.list_trainers()
+    else:
+        specialties = db.list_specialties()
+        idx = int(val)
+        if idx >= len(specialties):
+            await callback.answer("Список обновился, попробуй ещё раз.", show_alert=True)
+            return
+        trainers = db.list_trainers_by_specialty(specialties[idx])
+    await callback.message.delete()
+    await send_trainer_list(callback.message.chat.id, trainers)
+    await callback.answer()
+
+
+async def send_trainer_list(chat_id: int, trainers):
+    if not trainers:
+        await bot.send_message(chat_id, "Тренеров с таким направлением пока нет 😔")
+        return
     if len(trainers) == 1:
-        await show_days(message.chat.id, trainers[0]["id"])
+        await show_days(chat_id, trainers[0]["id"])
         return
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -325,7 +606,7 @@ async def client_pick_trainer(message: Message):
             for t in trainers
         ]
     )
-    await message.answer("Выбери тренера 👇", reply_markup=kb)
+    await bot.send_message(chat_id, "Выбери тренера 👇", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("picktrainer:"))
@@ -374,21 +655,24 @@ async def client_day_picked(callback: CallbackQuery):
 async def client_book_confirm(callback: CallbackQuery):
     slot_id = int(callback.data.split(":")[1])
     client_name = callback.from_user.full_name
-    ok = db.book_slot(slot_id, callback.from_user.id, client_name)
+    client_username = callback.from_user.username
+    ok = db.book_slot(slot_id, callback.from_user.id, client_name, client_username)
     if not ok:
         await callback.answer("Увы, этот слот уже заняли.", show_alert=True)
         return
     slot = db.get_slot(slot_id)
     trainer = db.get_trainer(slot["trainer_id"])
+    trainer_contact = await get_contact_line(slot["trainer_id"])
     await callback.message.edit_text(
         f"🎉 Готово! Записал(а) тебя к <b>{esc(trainer['name'])}</b> "
-        f"на <b>{fmt_slot(slot['slot_dt'])}</b>."
+        f"на <b>{fmt_slot(slot['slot_dt'])}</b>.{trainer_contact}"
     )
     await callback.answer()
+    client_contact = f" (@{esc(client_username)})" if client_username else ""
     try:
         await bot.send_message(
             slot["trainer_id"],
-            f"🔔 <b>Новая запись!</b>\n{esc(client_name)} — {fmt_slot(slot['slot_dt'])}",
+            f"🔔 <b>Новая запись!</b>\n{esc(client_name)}{client_contact} — {fmt_slot(slot['slot_dt'])}",
         )
     except Exception:
         logger.warning("Не удалось уведомить тренера")
