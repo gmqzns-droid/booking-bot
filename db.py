@@ -241,3 +241,11 @@ def slots_needing_reminder(field: str, window_start: str, window_end: str):
 def mark_reminder_sent(slot_id: int, field: str):
     with get_conn() as conn:
         conn.execute(f"UPDATE slots SET {field}=1 WHERE id=?", (slot_id,))
+
+
+def reset_all():
+    """Полностью очищает всех тренеров, клиентов и записи. Необратимо — для тестирования."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM slots")
+        conn.execute("DELETE FROM clients")
+        conn.execute("DELETE FROM trainers")

@@ -52,6 +52,7 @@ QUICK_TIMES = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00",
                "16:00", "17:00", "18:00", "19:00", "20:00"]
 RECUR_WEEKS = 8  # на сколько недель вперёд генерировать повторяющееся расписание
 SUPPORT_CONTACT = "@gmqzn"  # по вопросам к боту пишут сюда
+ADMIN_ID = 660762742  # твой telegram id — только тебе доступен /reset_all
 MSK = ZoneInfo("Europe/Moscow")
 
 
@@ -262,6 +263,21 @@ async def cmd_help(message: Message):
             "Бот сам напомнит о тренировке за 24 часа и за час до неё.\n\n"
             f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}",
         )
+
+
+@dp.message(Command("reset_all"))
+async def cmd_reset_all(message: Message, state: FSMContext, command: CommandObject):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if (command.args or "").strip() != "confirm":
+        await message.answer(
+            "⚠️ Это удалит <b>всех</b> тренеров, клиентов и записи без возможности восстановить.\n"
+            "Чтобы подтвердить, напиши: <code>/reset_all confirm</code>"
+        )
+        return
+    db.reset_all()
+    await state.clear()
+    await message.answer("🗑 Готово. Все данные удалены — можно тестировать с нуля через /trainer.")
 
 
 @dp.message(StateFilter(TrainerOnboarding.waiting_name))
