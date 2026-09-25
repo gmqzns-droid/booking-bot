@@ -72,11 +72,29 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS services (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trainer_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                price INTEGER,
+                duration_min INTEGER,
+                active INTEGER NOT NULL DEFAULT 1,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         # Миграции для более старых баз (например, на Railway после обновления кода)
         _ensure_column(conn, "slots", "client_username", "TEXT")
         _ensure_column(conn, "slots", "no_show", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "slots", "service_id", "INTEGER")
+        _ensure_column(conn, "slots", "service_name", "TEXT")
         _ensure_column(conn, "trainers", "price", "INTEGER")
         _ensure_column(conn, "trainers", "duration_min", "INTEGER")
+        _ensure_column(conn, "trainers", "category", "TEXT")
+        _ensure_column(conn, "trainers", "category_key", "TEXT")
 
 
 # ---------- Тренеры ----------
@@ -108,6 +126,71 @@ def set_trainer_duration(trainer_id: int, duration_min: int | None):
     """duration_min=None — убрать длительность (не показывать клиенту)."""
     with get_conn() as conn:
         conn.execute("UPDATE trainers SET duration_min=? WHERE id=?", (duration_min, trainer_id))
+
+
+def set_trainer_category(trainer_id: int, category: str, category_key: str):
+    """category — как написал сам специалист ('маникюр', 'подготовка к ЕГЭ по химии', ...),
+    category_key — вычисленный бакет (fitness/beauty/tutoring/medical/other) для подбора формулировок."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE trainers SET category=?, category_key=? WHERE id=?",
+            (category, category_key, trainer_id),
+        )
+
+
+# ---------- Услуги ----------
+
+def add_service(trainer_id: int, name: str, price: int | None, duration_min: int | None) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM services WHERE trainer_id=?",
+            (trainer_id,),
+        )
+        pos = cur.fetchone()["pos"]
+        cur = conn.execute(
+            "INSERT INTO services (trainer_id, name, price, duration_min, active, position, created_at) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (trainer_id, name, price, duration_min, pos, now_msk().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def list_services(trainer_id: int, active_only: bool = True):
+    with get_conn() as conn:
+        q = "SELECT * FROM services WHERE trainer_id=?"
+        if active_only:
+            q += " AND active=1"
+        q += " ORDER BY position, id"
+        return conn.execute(q, (trainer_id,)).fetchall()
+
+
+def get_service(service_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM services WHERE id=?", (service_id,)).fetchone()
+
+
+def update_service(service_id: int, name: str | None = None, price: int | None = -1, duration_min: int | None = -1):
+    """price/duration_min: передавай -1, если поле не нужно менять (None — осознанно очистить)."""
+    with get_conn() as conn:
+        if name is not None:
+            conn.execute("UPDATE services SET name=? WHERE id=?", (name, service_id))
+        if price != -1:
+            conn.execute("UPDATE services SET price=? WHERE id=?", (price, service_id))
+        if duration_min != -1:
+            conn.execute("UPDATE services SET duration_min=? WHERE id=?", (duration_min, service_id))
+
+
+def delete_service(service_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE services SET active=0 WHERE id=?", (service_id,))
+
+
+def count_services(trainer_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM services WHERE trainer_id=? AND active=1", (trainer_id,)
+        ).fetchone()
+    return row["c"] if row else 0
 
 
 def get_trainer(trainer_id: int):
@@ -222,12 +305,19 @@ def get_slot(slot_id: int):
         return conn.execute("SELECT * FROM slots WHERE id=?", (slot_id,)).fetchone()
 
 
-def book_slot(slot_id: int, client_id: int, client_name: str, client_username: str | None = None) -> bool:
+def book_slot(
+    slot_id: int,
+    client_id: int,
+    client_name: str,
+    client_username: str | None = None,
+    service_id: int | None = None,
+    service_name: str | None = None,
+) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=? "
-            "WHERE id=? AND status='free'",
-            (client_id, client_name, client_username, slot_id),
+            "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=?, "
+            "service_id=?, service_name=? WHERE id=? AND status='free'",
+            (client_id, client_name, client_username, service_id, service_name, slot_id),
         )
         return cur.rowcount > 0
 
@@ -242,7 +332,7 @@ def free_up_slot(slot_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE slots SET status='free', client_id=NULL, client_name=NULL, client_username=NULL, "
-            "reminder_24h_sent=0, reminder_1h_sent=0 WHERE id=?",
+            "service_id=NULL, service_name=NULL, reminder_24h_sent=0, reminder_1h_sent=0 WHERE id=?",
             (slot_id,),
         )
         return cur.rowcount > 0

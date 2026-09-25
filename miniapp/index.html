@@ -3,27 +3,68 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-<title>Запись к тренеру</title>
+<title>Запись</title>
 <link rel="stylesheet" href="style.css" />
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
-  <div id="tabs" class="tabs">
-    <button class="tab active" data-tab="book">📅 Записаться</button>
-    <button class="tab" data-tab="my">🗓 Мои записи</button>
+  <div id="loading" class="screen center">
+    <div class="spinner"></div>
   </div>
 
-  <div id="header" class="header"></div>
-
-  <div id="book-view" class="view">
-    <div id="days" class="days"></div>
-    <div id="slots" class="slots"></div>
-    <div id="book-empty" class="empty" hidden>У этого тренера пока нет свободного времени 😔</div>
+  <div id="auth-error" class="screen center" hidden>
+    <div class="empty-state">
+      <div class="empty-emoji">🔒</div>
+      <div class="empty-title">Не удалось открыть приложение</div>
+      <div class="empty-text">Закрой это окно и открой приложение заново из чата с ботом.</div>
+    </div>
   </div>
 
-  <div id="my-view" class="view" hidden>
-    <div id="my-list" class="my-list"></div>
-    <div id="my-empty" class="empty" hidden>Пока нет записей 🗓</div>
+  <!-- ГОСТЬ: ни специалист, ни привязанный клиент -->
+  <div id="screen-guest" class="screen" hidden>
+    <div class="topbar"><div class="topbar-title">Добро пожаловать 👋</div></div>
+    <div class="content">
+      <div class="card">
+        <div class="card-title">Ты попал сюда без ссылки специалиста</div>
+        <p class="muted">Если ты клиент — попроси у своего мастера/тренера/репетитора персональную ссылку на бота.</p>
+      </div>
+      <div class="card" id="become-provider-card">
+        <div class="card-title">Или заведи здесь свою запись</div>
+        <p class="muted">Если ты сам оказываешь услуги — тренировки, бьюти, репетиторство и т.д. — можешь завести кабинет специалиста прямо тут.</p>
+        <button class="btn btn-primary btn-block" id="become-provider-btn">Стать специалистом</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ОНБОРДИНГ СПЕЦИАЛИСТА -->
+  <div id="screen-onboarding" class="screen" hidden>
+    <div class="topbar"><div class="topbar-title">Кабинет специалиста</div></div>
+    <div class="content">
+      <div class="card">
+        <div class="field">
+          <label class="field-label">Как тебя подписывать клиентам?</label>
+          <input id="ob-name" class="input" type="text" placeholder="Имя" maxlength="80" />
+        </div>
+        <div class="field">
+          <label class="field-label">Чем занимаешься?</label>
+          <input id="ob-category" class="input" type="text" placeholder="например: маникюр, персональные тренировки, репетитор по химии" maxlength="120" />
+          <div class="field-hint">Мы подстроим формулировки в приложении под твою сферу.</div>
+        </div>
+        <button class="btn btn-primary btn-block" id="ob-submit">Готово</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ОСНОВНОЕ ПРИЛОЖЕНИЕ -->
+  <div id="screen-app" class="screen" hidden>
+    <div class="topbar">
+      <div class="topbar-title" id="app-title">—</div>
+      <div class="topbar-subtitle" id="app-subtitle"></div>
+    </div>
+
+    <div class="content" id="content"></div>
+
+    <div class="tabbar" id="tabbar"></div>
   </div>
 
   <div id="confirm-overlay" class="overlay" hidden>
@@ -31,9 +72,13 @@
       <div id="confirm-text" class="confirm-text"></div>
       <div class="confirm-actions">
         <button id="confirm-yes" class="btn btn-primary">✅ Да</button>
-        <button id="confirm-no" class="btn btn-secondary">❌ Отмена</button>
+        <button id="confirm-no" class="btn btn-secondary">Отмена</button>
       </div>
     </div>
+  </div>
+
+  <div id="sheet-overlay" class="overlay" hidden>
+    <div class="sheet-card" id="sheet-card"></div>
   </div>
 
   <div id="toast" class="toast" hidden></div>
