@@ -51,6 +51,7 @@ MONTHS_RU = ["", "января", "февраля", "марта", "апреля",
 QUICK_TIMES = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00",
                "16:00", "17:00", "18:00", "19:00", "20:00"]
 RECUR_WEEKS = 8  # на сколько недель вперёд генерировать повторяющееся расписание
+SUPPORT_CONTACT = "@gmqzn"  # по вопросам к боту пишут сюда
 MSK = ZoneInfo("Europe/Moscow")
 
 
@@ -210,7 +211,8 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject)
         await message.answer(
             "👋 <b>Привет!</b>\n\n"
             "Этот бот работает только по персональным ссылкам тренеров — "
-            "попроси у своего тренера ссылку на бота, и всё будет готово за секунду."
+            "попроси у своего тренера ссылку на бота, и всё будет готово за секунду.\n\n"
+            f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}"
         )
         return
 
@@ -248,7 +250,8 @@ async def cmd_help(message: Message):
             "📋 <b>Мои записи</b> — все слоты, занятые и свободные; нажми, чтобы отменить\n"
             "⚙️ <b>Профиль</b> — изменить имя или специальность\n"
             "🔗 <b>Моя ссылка</b> — персональная ссылка для клиентов\n\n"
-            "Когда клиент бронирует время, тебе приходит уведомление с его контактом.",
+            "Когда клиент бронирует время, тебе приходит уведомление с его контактом.\n\n"
+            f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}",
             reply_markup=trainer_menu(),
         )
     else:
@@ -256,8 +259,8 @@ async def cmd_help(message: Message):
             "🙋 <b>Как пользоваться ботом</b>\n\n"
             "🔍 <b>Записаться</b> — выбрать день и время у своего тренера\n"
             "🗓 <b>Мои записи</b> — твои записи; нажми, чтобы отменить\n\n"
-            "Бот сам напомнит о тренировке за 24 часа и за час до неё.\n"
-            "Если ты сам тренер — напиши /trainer.",
+            "Бот сам напомнит о тренировке за 24 часа и за час до неё.\n\n"
+            f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}",
         )
 
 
@@ -723,11 +726,28 @@ async def send_reminders():
         db.mark_reminder_sent(slot["id"], "reminder_1h_sent")
 
 
+async def setup_bot_profile():
+    """Описание бота в профиле Telegram — со ссылкой на поддержку."""
+    try:
+        await bot.set_my_description(
+            description=(
+                "Бот для записи на тренировки — работает по персональной ссылке твоего тренера.\n\n"
+                f"По вопросам пиши {SUPPORT_CONTACT} 🛟"
+            )
+        )
+        await bot.set_my_short_description(
+            short_description=f"Запись на тренировки к своему тренеру. Вопросы — {SUPPORT_CONTACT}"
+        )
+    except Exception:
+        logger.warning("Не удалось обновить описание бота")
+
+
 async def main():
     if not BOT_TOKEN:
         raise SystemExit("Заполни BOT_TOKEN в файле .env")
 
     db.init_db()
+    await setup_bot_profile()
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_reminders, "interval", minutes=5)
