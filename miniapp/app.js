@@ -458,7 +458,10 @@
         showToast("Перенесено");
         renderProviderSchedule();
       } catch (e) {
-        showToast(e.status === 409 ? "На это время уже есть запись" : "Не получилось перенести");
+        const msg = e.status === 409
+          ? (e.message === "slot_conflict" ? "На это время накладывается другая запись по длительности услуги" : "На это время уже есть запись")
+          : "Не получилось перенести";
+        showToast(msg);
       }
     };
   }
@@ -1177,7 +1180,10 @@
           setTab("my");
         } catch (e) {
           haptic("error");
-          showToast(e.status === 409 ? "Увы, время уже заняли" : "Не получилось перенести");
+          const msg = e.status === 409
+            ? (e.message === "slot_conflict" ? "На это время накладывается другая запись" : "Увы, время уже заняли")
+            : "Не получилось перенести";
+          showToast(msg);
           CLIENT_HOME = await api("/api/client/home", { method: "GET" });
           renderClientBook();
         }
@@ -1207,6 +1213,7 @@
           promo_invalid: "Такого промокода нет",
           promo_exhausted: "У промокода закончился лимит",
           promo_used: "Ты уже использовал(а) этот промокод",
+          slot_conflict: "На это время накладывается другая запись — выбери другое время",
         };
         const errCode = (e && e.message) || "";
         showToast(messages[errCode] || (e.status === 409 ? "Увы, время уже заняли" : "Не получилось записаться"));

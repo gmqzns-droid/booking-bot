@@ -513,6 +513,16 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                 created = db.get_slot_by_dt(old["trainer_id"], old["staff_id"], new_slot_dt)
                 new_id = created["id"]
 
+        new_row = db.get_slot(new_id)
+        old_service = db.get_service(old["service_id"]) if "service_id" in old.keys() and old["service_id"] else None
+        if old_service and old_service["duration_min"]:
+            conflict = db.find_overlapping_booked_slot(
+                old["trainer_id"], old["staff_id"], new_row["slot_dt"], old_service["duration_min"],
+                exclude_slot_id=old["id"],
+            )
+            if conflict:
+                return web.json_response({"error": "slot_conflict"}, status=409)
+
         old_dt, client_id = old["slot_dt"], old["client_id"]
         ok = db.reschedule_slot(old["id"], new_id)
         if not ok:
@@ -755,6 +765,13 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             if db.has_client_used_promo(promo["id"], user["id"]):
                 return web.json_response({"error": "promo_used"}, status=409)
 
+        if service and service["duration_min"]:
+            conflict = db.find_overlapping_booked_slot(
+                slot_pre["trainer_id"], slot_pre["staff_id"], slot_pre["slot_dt"], service["duration_min"],
+            )
+            if conflict:
+                return web.json_response({"error": "slot_conflict"}, status=409)
+
         full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Без имени"
         username = user.get("username")
 
@@ -855,6 +872,15 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             return web.json_response({"error": "bad new_slot_id"}, status=400)
         if new["status"] != "free":
             return web.json_response({"error": "slot taken"}, status=409)
+
+        old_service = db.get_service(old["service_id"]) if "service_id" in old.keys() and old["service_id"] else None
+        if old_service and old_service["duration_min"]:
+            conflict = db.find_overlapping_booked_slot(
+                old["trainer_id"], old["staff_id"], new["slot_dt"], old_service["duration_min"],
+                exclude_slot_id=old["id"],
+            )
+            if conflict:
+                return web.json_response({"error": "slot_conflict"}, status=409)
 
         old_dt = old["slot_dt"]
         ok = db.reschedule_slot(slot_id, new_slot_id)

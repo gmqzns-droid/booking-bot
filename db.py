@@ -694,6 +694,39 @@ def book_slot(
         return cur.rowcount > 0
 
 
+def find_overlapping_booked_slot(
+    trainer_id: int, staff_id: int, slot_dt: str, duration_min: int | None, exclude_slot_id: int | None = None
+):
+    """Ищет уже забронированный слот того же сотрудника, чьё время пересекается с окном
+    [slot_dt, slot_dt+duration_min). Слоты расставляет мастер вручную как отдельные точки
+    времени, а не сеткой по длительности услуги — поэтому если услуга длинная (например 60 мин),
+    а слоты стоят через 30, эта проверка не даёт забронировать два визита, которые физически
+    наложатся друг на друга. Услуга без указанной длительности не блокирует соседей (как раньше)."""
+    if not duration_min:
+        return None
+    start = datetime.strptime(slot_dt, "%Y-%m-%d %H:%M")
+    end = start + timedelta(minutes=duration_min)
+    window_start = (start - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
+    window_end = (end + timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT slots.*, services.duration_min AS svc_duration FROM slots "
+            "LEFT JOIN services ON services.id = slots.service_id "
+            "WHERE slots.trainer_id=? AND slots.staff_id=? AND slots.status='booked' "
+            "AND slots.slot_dt >= ? AND slots.slot_dt <= ?",
+            (trainer_id, staff_id, window_start, window_end),
+        ).fetchall()
+    for r in rows:
+        if exclude_slot_id and r["id"] == exclude_slot_id:
+            continue
+        other_start = datetime.strptime(r["slot_dt"], "%Y-%m-%d %H:%M")
+        other_duration = r["svc_duration"] or 0
+        other_end = other_start + timedelta(minutes=other_duration) if other_duration else other_start + timedelta(minutes=1)
+        if start < other_end and other_start < end:
+            return r
+    return None
+
+
 def get_slot_by_dt(trainer_id: int, staff_id: int, slot_dt: str):
     with get_conn() as conn:
         return conn.execute(
