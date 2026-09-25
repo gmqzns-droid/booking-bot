@@ -192,8 +192,9 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject)
         )
         return
 
-    # Клиент: определяем "своего" тренера — по персональной ссылке,
-    # по уже существующей привязке или по прошлым записям.
+    # Клиент: определяем "своего" тренера — строго по персональной ссылке тренера
+    # или по уже существующей привязке (если писал боту раньше по такой ссылке).
+    # Никакого автоподбора "тренер один — значит он" — доступ только по ссылке.
     trainer_id = None
     payload = (command.args or "").strip()
     if payload.isdigit() and db.get_trainer(int(payload)):
@@ -204,15 +205,12 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject)
         bookings = db.list_client_bookings(message.from_user.id)
         if bookings:
             trainer_id = bookings[0]["trainer_id"]
-        elif len(db.list_trainers()) == 1:
-            trainer_id = db.list_trainers()[0]["id"]
 
     if trainer_id is None:
         await message.answer(
             "👋 <b>Привет!</b>\n\n"
-            "Похоже, у тебя нет ссылки от тренера — попроси у него персональную ссылку "
-            "на этого бота, и всё будет готово за секунду.\n\n"
-            "Если ты сам тренер и хочешь завести здесь расписание — напиши /trainer."
+            "Этот бот работает только по персональным ссылкам тренеров — "
+            "попроси у своего тренера ссылку на бота, и всё будет готово за секунду."
         )
         return
 
