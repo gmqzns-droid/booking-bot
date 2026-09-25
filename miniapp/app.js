@@ -412,7 +412,7 @@
       <button class="btn btn-primary btn-block" id="slot-submit">Добавить</button>
     `);
 
-    const modeChips = Array.from(document.querySelectorAll('[data-mode]'));
+    const modeChips = Array.from(el("sheet-card").querySelectorAll('[data-mode]'));
     modeChips.forEach((c) => c.onclick = () => {
       modeChips.forEach((x) => x.classList.remove("active"));
       c.classList.add("active");
@@ -420,7 +420,7 @@
       el("mode-recur").hidden = c.dataset.mode !== "recur";
     });
 
-    const wdChips = Array.from(document.querySelectorAll('[data-wd]'));
+    const wdChips = Array.from(el("sheet-card").querySelectorAll('[data-wd]'));
     wdChips.forEach((c) => c.onclick = () => c.classList.toggle("active"));
 
     el("slot-submit").onclick = async () => {
