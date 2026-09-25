@@ -818,7 +818,7 @@
       <div class="sheet-title">Новый промокод</div>
       <div class="field">
         <label class="field-label">Код</label>
-        <input class="input" id="promo-code" type="text" maxlength="20" placeholder="Например: LETO2026" style="text-transform:uppercase" />
+        <input class="input" id="promo-code" type="text" maxlength="20" enterkeyhint="done" placeholder="Например: LETO2026" style="text-transform:uppercase" />
       </div>
       <div class="field">
         <label class="field-label">Тип скидки</label>
@@ -830,14 +830,18 @@
       </div>
       <div class="field" id="promo-value-field">
         <label class="field-label" id="promo-value-label">Размер скидки, %</label>
-        <input class="input" id="promo-value" type="number" min="1" placeholder="20" />
+        <input class="input" id="promo-value" type="number" min="1" inputmode="numeric" enterkeyhint="done" placeholder="20" />
       </div>
       <div class="field">
         <label class="field-label">Лимит использований</label>
-        <input class="input" id="promo-max-uses" type="number" min="1" placeholder="Без ограничения" />
+        <input class="input" id="promo-max-uses" type="number" min="1" inputmode="numeric" enterkeyhint="done" placeholder="Без ограничения" />
       </div>
       <button class="btn btn-primary btn-block" id="promo-submit">Создать</button>
     `);
+
+    [el("promo-code"), el("promo-value"), el("promo-max-uses")].forEach((inp) => {
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.blur(); });
+    });
 
     const typeChips = Array.from(el("promo-type-chips").children);
     const valueLabels = { percent: "Размер скидки, %", fixed: "Размер скидки, ₽", free: "" };
@@ -925,7 +929,10 @@
 
     html += `<div class="field">
       <label class="field-label">Промокод (если есть)</label>
-      <input class="input" id="promo-input" type="text" maxlength="20" placeholder="Необязательно" style="text-transform:uppercase" value="${escapeHtml(ENTERED_PROMO_CODE || "")}" />
+      <div class="input-row">
+        <input class="input" id="promo-input" type="text" maxlength="20" enterkeyhint="done" placeholder="Необязательно" style="text-transform:uppercase" value="${escapeHtml(ENTERED_PROMO_CODE || "")}" />
+        <button class="btn btn-secondary" id="promo-apply-btn" style="flex:0 0 auto">✓</button>
+      </div>
     </div>`;
 
     html += `<div id="schedule-area"></div>`;
@@ -934,6 +941,11 @@
     selectedStaffId = staffExists ? presetStaffId : staffList[0].id;
 
     el("promo-input").oninput = (e) => { ENTERED_PROMO_CODE = e.target.value.trim().toUpperCase(); };
+    el("promo-input").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+    el("promo-apply-btn").onclick = () => {
+      el("promo-input").blur();
+      if (ENTERED_PROMO_CODE) showToast(`Промокод «${ENTERED_PROMO_CODE}» применится при записи`);
+    };
 
     if (el("service-chips")) {
       Array.from(el("service-chips").children).forEach((c) => c.onclick = () => {

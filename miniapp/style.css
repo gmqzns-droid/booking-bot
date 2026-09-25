@@ -31,6 +31,7 @@ body {
   background: var(--tg-secondary-bg);
   color: var(--tg-text);
   -webkit-font-smoothing: antialiased;
+  touch-action: manipulation; /* убирает жест зума по двойному тапу и 300мс задержку тапа */
 }
 
 .screen {
@@ -155,7 +156,7 @@ body {
   border: 1px solid var(--card-border);
   background: var(--tg-secondary-bg);
   color: var(--tg-text);
-  font-size: 15px;
+  font-size: 16px; /* >=16px не даёт iOS Safari/WebView автозумить при фокусе на поле */
   outline: none;
 }
 
