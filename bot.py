@@ -23,6 +23,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import (
+    CallbackQuery,
     Message,
     ErrorEvent,
     FSInputFile,
@@ -55,6 +56,11 @@ ADMIN_ID = 660762742  # твой telegram id — только тебе дост�
 MSK = ZoneInfo("Europe/Moscow")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").rstrip("/")  # базовый https-домен для мини-приложения
 PORT = int(os.getenv("PORT", "8080"))
+
+# user_id -> review_id: ждём от этого клиента комментарий следующим сообщением после того,
+# как он поставил оценку (тонкая, но осознанно простая замена полноценному FSM — сценарий
+# однострочный и разрывать его состоянием ради одного поля избыточно).
+PENDING_REVIEW_COMMENT: dict[int, int] = {}
 
 
 def now_msk() -> datetime:
@@ -135,6 +141,57 @@ async def cmd_reset_all(message: Message):
     await message.answer("🗑 Готово, база очищена.")
 
 
+# ---------- Отзывы после визита ----------
+
+@dp.callback_query(F.data.startswith("rv:"))
+async def cb_review_rating(callback: CallbackQuery):
+    try:
+        _, slot_id_str, rating_str = callback.data.split(":")
+        slot_id, rating = int(slot_id_str), int(rating_str)
+    except (ValueError, AttributeError):
+        await callback.answer()
+        return
+
+    slot = db.get_slot(slot_id)
+    if not slot or slot["client_id"] != callback.from_user.id:
+        await callback.answer("Эта запись не найдена", show_alert=True)
+        return
+
+    review_id = db.add_review(
+        slot_id, slot["trainer_id"],
+        slot["staff_id"] if "staff_id" in slot.keys() else None,
+        slot["staff_name"] if "staff_name" in slot.keys() else None,
+        callback.from_user.id, callback.from_user.full_name, rating,
+    )
+    if review_id is None:
+        await callback.answer("Ты уже оценил(а) эту запись, спасибо!", show_alert=True)
+        return
+
+    PENDING_REVIEW_COMMENT[callback.from_user.id] = review_id
+    stars = "⭐" * rating
+    try:
+        await callback.message.edit_text(
+            f"Спасибо за оценку! {stars}\n\n"
+            f"Если хочешь — напиши пару слов отзыва следующим сообщением. Необязательно."
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@dp.message(F.text & ~F.text.startswith("/"))
+async def handle_plain_text(message: Message):
+    """Единственное, чего мы ждём вне команд и мини-приложения — комментарий к отзыву
+    сразу после того, как клиент поставил оценку. Всё остальное тихо игнорируем."""
+    review_id = PENDING_REVIEW_COMMENT.pop(message.from_user.id, None)
+    if review_id is None:
+        return
+    comment = (message.text or "").strip()[:500]
+    if comment:
+        db.set_review_comment(review_id, comment)
+        await message.answer("Спасибо, добавил(а) твой отзыв! 🙏")
+
+
 # ---------- Напоминания и бэкап ----------
 
 async def send_reminders():
@@ -164,6 +221,32 @@ async def send_reminders():
         except Exception:
             logger.warning("Не удалось отправить напоминание клиенту %s", slot["client_id"])
         db.mark_reminder_sent(slot["id"], "reminder_1h_sent")
+
+
+async def send_review_requests():
+    """Раз в 20 минут спрашивает оценку у тех, чей визит прошёл 2+ часа назад (и не старше
+    26 часов — чтобы не заваливать клиентов старыми просьбами после простоя/редеплоя)."""
+    for slot in db.slots_needing_review():
+        trainer = db.get_trainer(slot["trainer_id"])
+        if not trainer:
+            db.mark_review_requested(slot["id"])
+            continue
+        staff_name = (
+            slot["staff_name"] if "staff_name" in slot.keys() and slot["staff_name"] else trainer["name"]
+        )
+        who_line = f" у <b>{esc(staff_name)}</b>" if trainer["is_business"] else ""
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"{i}⭐", callback_data=f"rv:{slot['id']}:{i}") for i in range(1, 6)
+        ]])
+        try:
+            await bot.send_message(
+                slot["client_id"],
+                f"Как прошёл визит{who_line}? Оцени от 1 до 5 — это очень помогает специалисту.",
+                reply_markup=kb,
+            )
+        except Exception:
+            logger.warning("Не удалось отправить запрос на отзыв клиенту %s", slot["client_id"])
+        db.mark_review_requested(slot["id"])
 
 
 async def send_db_backup():
@@ -245,6 +328,7 @@ async def main():
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_reminders, "interval", minutes=5)
+    scheduler.add_job(send_review_requests, "interval", minutes=20)
     scheduler.add_job(send_db_backup, "cron", hour=6, minute=0, timezone=MSK)
     scheduler.start()
 

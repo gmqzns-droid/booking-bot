@@ -472,6 +472,21 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             ],
         })
 
+    @require_auth
+    async def handle_provider_reviews(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        summary = db.trainer_rating_summary(user["id"])
+        reviews = [
+            {
+                "id": r["id"], "rating": r["rating"], "comment": r["comment"],
+                "client_name": r["client_name"], "staff_name": r["staff_name"],
+                "created_at": r["created_at"],
+            }
+            for r in db.list_reviews_for_trainer(user["id"])
+        ]
+        return web.json_response({"summary": summary, "reviews": reviews})
+
     # ---------- клиентская сторона ----------
 
     @require_auth
@@ -681,6 +696,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/slots/cancel", handle_slot_cancel)
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
+    app.router.add_get("/api/provider/reviews", handle_provider_reviews)
     app.router.add_get("/api/client/home", handle_client_home)
     app.router.add_get("/api/client/staff_schedule", handle_client_staff_schedule)
     app.router.add_post("/api/client/waitlist/join", handle_waitlist_join)

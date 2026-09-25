@@ -115,6 +115,23 @@ def init_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_waitlist_staff_client "
             "ON waitlist(trainer_id, staff_id, client_id)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot_id INTEGER NOT NULL UNIQUE,
+                trainer_id INTEGER NOT NULL,
+                staff_id INTEGER,
+                staff_name TEXT,
+                client_id INTEGER NOT NULL,
+                client_name TEXT,
+                rating INTEGER NOT NULL,
+                comment TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        _ensure_column(conn, "slots", "review_requested", "INTEGER NOT NULL DEFAULT 0")
         # Миграции для более старых баз (например, на Railway после обновления кода)
         _ensure_column(conn, "slots", "client_username", "TEXT")
         _ensure_column(conn, "slots", "no_show", "INTEGER NOT NULL DEFAULT 0")
@@ -288,6 +305,75 @@ def pop_waitlist_for_staff(trainer_id: int, staff_id: int):
         conn.execute(
             "DELETE FROM waitlist WHERE trainer_id=? AND staff_id=?", (trainer_id, staff_id)
         )
+    return rows
+
+
+# ---------- Отзывы после визита ----------
+
+def slots_needing_review(hours_after: int = 2, max_age_hours: int = 26):
+    """Прошедшие визиты (booked, не неявка), которым пора спросить оценку: время сеанса
+    было хотя бы `hours_after` часов назад, но не больше `max_age_hours` (чтобы не заваливать
+    клиента древними просьбами после долгого простоя/редеплоя)."""
+    with get_conn() as conn:
+        now = now_msk()
+        cutoff = (now - timedelta(hours=hours_after)).strftime("%Y-%m-%d %H:%M")
+        floor = (now - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M")
+        rows = conn.execute(
+            "SELECT * FROM slots WHERE status='booked' AND no_show=0 AND review_requested=0 "
+            "AND slot_dt <= ? AND slot_dt > ?",
+            (cutoff, floor),
+        ).fetchall()
+    return rows
+
+
+def mark_review_requested(slot_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE slots SET review_requested=1 WHERE id=?", (slot_id,))
+
+
+def add_review(
+    slot_id: int, trainer_id: int, staff_id: int | None, staff_name: str | None,
+    client_id: int, client_name: str, rating: int,
+) -> int | None:
+    """Возвращает id созданного отзыва, либо None, если отзыв на этот слот уже есть."""
+    with get_conn() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO reviews (slot_id, trainer_id, staff_id, staff_name, client_id, "
+                "client_name, rating, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (slot_id, trainer_id, staff_id, staff_name, client_id, client_name, rating,
+                 now_msk().isoformat()),
+            )
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+
+def set_review_comment(review_id: int, comment: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE reviews SET comment=? WHERE id=?", (comment, review_id))
+
+
+def get_review(review_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM reviews WHERE id=?", (review_id,)).fetchone()
+
+
+def trainer_rating_summary(trainer_id: int) -> dict:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c, AVG(rating) AS avg FROM reviews WHERE trainer_id=?",
+            (trainer_id,),
+        ).fetchone()
+    return {"count": row["c"] or 0, "avg": round(row["avg"], 1) if row["avg"] else None}
+
+
+def list_reviews_for_trainer(trainer_id: int, limit: int = 30):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM reviews WHERE trainer_id=? ORDER BY created_at DESC LIMIT ?",
+            (trainer_id, limit),
+        ).fetchall()
     return rows
 
 

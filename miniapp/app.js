@@ -681,6 +681,10 @@
           ? "Добавляй сотрудников во вкладке «Сотрудники» — клиент сам выбирает мастера."
           : "Один специалист. Переключись на «Команда/салон», если нужно добавить других мастеров."}</p>
       </div>
+      <div class="card" id="pf-reviews-card">
+        <div class="card-title">Отзывы</div>
+        <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
+      </div>
     `;
     el("pf-save").onclick = async () => {
       const name = el("pf-name").value.trim();
@@ -706,6 +710,33 @@
         showToast("Ссылка скопирована");
       }
     };
+
+    (async () => {
+      const card = el("pf-reviews-card");
+      let data;
+      try {
+        data = await api("/api/provider/reviews", { method: "GET" });
+      } catch (e) {
+        if (card) card.innerHTML = '<div class="card-title">Отзывы</div><p class="muted">Не удалось загрузить</p>';
+        return;
+      }
+      if (!card) return;
+      const summary = data.summary || { count: 0, avg: null };
+      let html = '<div class="card-title">Отзывы</div>';
+      if (!summary.count) {
+        html += '<p class="muted">Пока нет отзывов — появятся после первых визитов.</p>';
+      } else {
+        html += `<p style="margin-bottom:14px">⭐ <b>${summary.avg}</b> · ${summary.count} ${summary.count === 1 ? "отзыв" : "отзывов"}</p>`;
+        data.reviews.filter((r) => r.comment).slice(0, 10).forEach((r) => {
+          const who = r.staff_name && r.staff_name !== PROVIDER.name ? ` · ${escapeHtml(r.staff_name)}` : "";
+          html += `<div class="list-item" style="display:block">
+            <div class="list-item-title">${"⭐".repeat(r.rating)}${who}</div>
+            <div class="list-item-sub">${escapeHtml(r.comment)}</div>
+          </div>`;
+        });
+      }
+      card.innerHTML = html;
+    })();
 
     Array.from(el("pf-mode-chips").children).forEach((c) => c.onclick = () => {
       const wantBusiness = c.dataset.mode === "business";
