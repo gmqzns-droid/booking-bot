@@ -795,6 +795,10 @@
           ? "Добавляй сотрудников во вкладке «Сотрудники» — клиент сам выбирает мастера."
           : "Один специалист. Переключись на «Команда/салон», если нужно добавить других мастеров."}</p>
       </div>
+      <div class="card" id="pf-stats-card">
+        <div class="card-title">Статистика</div>
+        <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
+      </div>
       <div class="card" id="pf-promos-card">
         <div class="card-title">Промокоды</div>
         <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
@@ -829,6 +833,7 @@
       }
     };
 
+    renderStatsCard();
     renderPromosCard();
 
     (async () => {
@@ -879,6 +884,37 @@
         showConfirm("Вернуться в режим «Я один(а)»? Останется только один сотрудник (ты).", doSwitch);
       }
     });
+  }
+
+  let STATS_PERIOD = "week";
+
+  async function renderStatsCard() {
+    const card = el("pf-stats-card");
+    if (!card) return;
+    card.innerHTML = `<div class="card-title">Статистика</div>
+      <div class="chips" id="stats-period-chips" style="margin-bottom:10px">
+        <button class="chip${STATS_PERIOD === "week" ? " active" : ""}" data-period="week">Неделя</button>
+        <button class="chip${STATS_PERIOD === "month" ? " active" : ""}" data-period="month">Месяц</button>
+      </div>
+      <div id="stats-body" class="center" style="padding:10px 0"><div class="spinner"></div></div>`;
+    Array.from(el("stats-period-chips").children).forEach((c) => c.onclick = () => {
+      STATS_PERIOD = c.dataset.period;
+      renderStatsCard();
+    });
+    let data;
+    try {
+      data = await api(`/api/provider/stats?period=${STATS_PERIOD}`, { method: "GET" });
+    } catch (e) {
+      el("stats-body").innerHTML = '<p class="muted">Не удалось загрузить</p>';
+      return;
+    }
+    el("stats-body").className = "";
+    el("stats-body").innerHTML = `
+      <div class="card-row"><span class="muted">Визитов</span><b>${data.visits}</b></div>
+      <div class="card-row"><span class="muted">Выручка</span><b>${data.revenue ? data.revenue + "₽" : "—"}</b></div>
+      <div class="card-row"><span class="muted">Средний чек</span><b>${data.avg_check ? data.avg_check + "₽" : "—"}</b></div>
+      <div class="card-row"><span class="muted">Неявки</span><b>${data.no_shows}${data.no_shows ? " (" + data.no_show_rate + "%)" : ""}</b></div>
+    `;
   }
 
   async function renderPromosCard() {

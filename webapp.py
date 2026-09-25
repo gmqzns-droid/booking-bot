@@ -605,6 +605,21 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         })
 
     @require_auth
+    async def handle_provider_stats(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        staff_id_raw = request.query.get("staff_id")
+        staff_id = None
+        if staff_id_raw:
+            staff = _staff_for_provider(user["id"], staff_id_raw)
+            if not staff:
+                return web.json_response({"error": "bad staff_id"}, status=400)
+            staff_id = staff["id"]
+        period = request.query.get("period", "week")
+        days = 30 if period == "month" else 7
+        return web.json_response(db.trainer_stats(user["id"], staff_id, days))
+
+    @require_auth
     async def handle_provider_reviews(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
@@ -956,6 +971,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/schedule/close_range", handle_schedule_close_range)
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
+    app.router.add_get("/api/provider/stats", handle_provider_stats)
     app.router.add_get("/api/provider/reviews", handle_provider_reviews)
     app.router.add_get("/api/provider/promos", handle_promos_list)
     app.router.add_post("/api/provider/promos/add", handle_promos_add)

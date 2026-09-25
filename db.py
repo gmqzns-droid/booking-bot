@@ -650,6 +650,38 @@ def list_free_slots_for_day(trainer_id: int, staff_id: int, day: str):
     return rows
 
 
+def trainer_stats(trainer_id: int, staff_id: int | None, days: int) -> dict:
+    """Статистика мастера за последние `days` дней: визиты, выручка (по текущей цене услуги
+    на момент запроса — оплату бот не проводит, это ориентир), неявки. staff_id=None — по
+    всем сотрудникам сразу (агрегат по бизнесу)."""
+    with get_conn() as conn:
+        since = (now_msk() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+        until = now_msk().strftime("%Y-%m-%d %H:%M")
+        params: list = [trainer_id, since, until]
+        staff_clause = ""
+        if staff_id:
+            staff_clause = "AND slots.staff_id=?"
+            params.append(staff_id)
+        rows = conn.execute(
+            f"SELECT slots.no_show AS no_show, services.price AS price FROM slots "
+            f"LEFT JOIN services ON services.id = slots.service_id "
+            f"WHERE slots.trainer_id=? AND slots.status='booked' "
+            f"AND slots.slot_dt >= ? AND slots.slot_dt < ? {staff_clause}",
+            params,
+        ).fetchall()
+    visits = sum(1 for r in rows if not r["no_show"])
+    no_shows = sum(1 for r in rows if r["no_show"])
+    revenue = sum((r["price"] or 0) for r in rows if not r["no_show"])
+    total = visits + no_shows
+    return {
+        "visits": visits,
+        "no_shows": no_shows,
+        "no_show_rate": round(100 * no_shows / total) if total else 0,
+        "revenue": revenue,
+        "avg_check": round(revenue / visits) if visits else 0,
+    }
+
+
 def list_slots_in_range(trainer_id: int, staff_id: int, start_date: str, end_date: str):
     """Все ещё активные (free+booked) слоты сотрудника в диапазоне дат [start_date, end_date]
     включительно — используется для массового закрытия периода (отпуск/выходной)."""
