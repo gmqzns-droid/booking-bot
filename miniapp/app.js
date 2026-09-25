@@ -800,6 +800,11 @@
           <label class="field-label">Чем занимаешься</label>
           <input class="input" id="pf-category" type="text" maxlength="120" value="${escapeHtml(PROVIDER.category || "")}" />
         </div>
+        <div class="field">
+          <label class="field-label">Не отменять позже чем за N часов</label>
+          <input class="input" id="pf-cancel-hours" type="number" min="0" max="168" step="1" value="${PROVIDER.cancel_min_hours || 0}" />
+          <div class="field-hint">0 — можно отменять в любой момент. Действует и на перенос записи клиентом.</div>
+        </div>
         <button class="btn btn-primary btn-block" id="pf-save">Сохранить</button>
       </div>
       <div class="card">
@@ -840,11 +845,16 @@
     el("pf-save").onclick = async () => {
       const name = el("pf-name").value.trim();
       const category = el("pf-category").value.trim();
+      const cancelHours = Math.max(0, parseInt(el("pf-cancel-hours").value, 10) || 0);
       if (!name) { showToast("Укажи имя"); return; }
       try {
-        await api("/api/provider/profile", { method: "POST", body: JSON.stringify({ name, category }) });
+        await api("/api/provider/profile", {
+          method: "POST",
+          body: JSON.stringify({ name, category, cancel_min_hours: cancelHours }),
+        });
         PROVIDER.name = name;
         PROVIDER.category = category;
+        PROVIDER.cancel_min_hours = cancelHours;
         haptic("success");
         showToast("Сохранено");
         setHeader("Профиль", "");
@@ -1266,9 +1276,11 @@
           setTab("my");
         } catch (e) {
           haptic("error");
-          const msg = e.status === 409
-            ? (e.message === "slot_conflict" ? "На это время накладывается другая запись" : "Увы, время уже заняли")
-            : "Не получилось перенести";
+          const msg = e.message === "cancel_too_late"
+            ? "Переносить уже поздно — свяжись со специалистом напрямую"
+            : e.status === 409
+              ? (e.message === "slot_conflict" ? "На это время накладывается другая запись" : "Увы, время уже заняли")
+              : "Не получилось перенести";
           showToast(msg);
           CLIENT_HOME = await api("/api/client/home", { method: "GET" });
           renderClientBook();
@@ -1374,7 +1386,9 @@
           try {
             await api("/api/client/cancel", { method: "POST", body: JSON.stringify({ slot_id: id }) });
             showToast("Отменил запись");
-          } catch (e) { showToast("Не получилось отменить"); }
+          } catch (e) {
+            showToast(e.message === "cancel_too_late" ? "Отменять уже поздно — свяжись со специалистом напрямую" : "Не получилось отменить");
+          }
           renderClientMy();
         });
       };

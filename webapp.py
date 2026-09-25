@@ -149,6 +149,7 @@ def trainer_public_dict(trainer) -> dict:
         "name": trainer["name"],
         "category": trainer["category"],
         "is_business": bool(trainer["is_business"]) if "is_business" in trainer.keys() else False,
+        "cancel_min_hours": trainer["cancel_min_hours"] if "cancel_min_hours" in trainer.keys() else 0,
         "terms": terms,
         "services": [service_to_dict(s) for s in db.list_services(trainer["id"])],
         "staff": [staff_to_dict(s) for s in db.list_staff(trainer["id"])],
@@ -219,6 +220,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                     "name": trainer["name"],
                     "category": trainer["category"],
                     "is_business": bool(trainer["is_business"]),
+                    "cancel_min_hours": trainer["cancel_min_hours"] if "cancel_min_hours" in trainer.keys() else 0,
                     "terms": terminology.terms_for(trainer["category_key"]),
                     "link": f"https://t.me/{bot_username}?start={trainer['id']}",
                     "staff": [staff_to_dict(s) for s in db.list_staff(trainer["id"])],
@@ -264,6 +266,14 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             if not want_business and db.count_staff(user["id"]) > 1:
                 return web.json_response({"error": "too many staff"}, status=409)
             db.set_trainer_is_business(user["id"], want_business)
+        if "cancel_min_hours" in body:
+            try:
+                hours = int(body.get("cancel_min_hours") or 0)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "bad cancel_min_hours"}, status=400)
+            if hours < 0 or hours > 168:
+                return web.json_response({"error": "bad cancel_min_hours"}, status=400)
+            db.set_trainer_cancel_min_hours(user["id"], hours)
         return web.json_response({"ok": True})
 
     # ---------- услуги ----------
@@ -897,6 +907,13 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not slot or slot["client_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
 
+        trainer = db.get_trainer(slot["trainer_id"])
+        min_hours = trainer["cancel_min_hours"] if trainer and "cancel_min_hours" in trainer.keys() else 0
+        if min_hours:
+            slot_time = datetime.strptime(slot["slot_dt"], "%Y-%m-%d %H:%M")
+            if slot_time - db.now_msk().replace(tzinfo=None) < timedelta(hours=min_hours):
+                return web.json_response({"error": "cancel_too_late", "min_hours": min_hours}, status=403)
+
         db.free_up_slot(slot_id)
 
         try:
@@ -930,6 +947,13 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             return web.json_response({"error": "bad new_slot_id"}, status=400)
         if new["status"] != "free":
             return web.json_response({"error": "slot taken"}, status=409)
+
+        trainer = db.get_trainer(old["trainer_id"])
+        min_hours = trainer["cancel_min_hours"] if trainer and "cancel_min_hours" in trainer.keys() else 0
+        if min_hours:
+            old_time = datetime.strptime(old["slot_dt"], "%Y-%m-%d %H:%M")
+            if old_time - db.now_msk().replace(tzinfo=None) < timedelta(hours=min_hours):
+                return web.json_response({"error": "cancel_too_late", "min_hours": min_hours}, status=403)
 
         old_service = db.get_service(old["service_id"]) if "service_id" in old.keys() and old["service_id"] else None
         if old_service and old_service["duration_min"]:

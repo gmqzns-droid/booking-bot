@@ -175,6 +175,7 @@ def init_db():
         _ensure_column(conn, "slots", "staff_id", "INTEGER")
         _ensure_column(conn, "slots", "staff_name", "TEXT")
         _ensure_column(conn, "clients", "blocked", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "trainers", "cancel_min_hours", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "trainers", "price", "INTEGER")
         _ensure_column(conn, "trainers", "duration_min", "INTEGER")
         _ensure_column(conn, "trainers", "category", "TEXT")
@@ -229,6 +230,11 @@ def set_trainer_category(trainer_id: int, category: str, category_key: str):
             "UPDATE trainers SET category=?, category_key=? WHERE id=?",
             (category, category_key, trainer_id),
         )
+
+
+def set_trainer_cancel_min_hours(trainer_id: int, hours: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE trainers SET cancel_min_hours=? WHERE id=?", (max(0, hours), trainer_id))
 
 
 def set_trainer_is_business(trainer_id: int, is_business: bool):
