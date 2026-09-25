@@ -41,30 +41,46 @@ def fmt_slot(slot_dt: str) -> str:
 def validate_init_data(init_data: str, bot_token: str) -> dict | None:
     """Проверяет подпись Telegram.WebApp.initData по алгоритму из документации Telegram.
     Возвращает распарсенные поля (включая 'user' как dict) или None, если подпись неверна
-    /данные протухли."""
+    /данные протухли.
+
+    Временно логирует ТОЧНУЮ причину отказа на каждом шаге — нужно, чтобы поймать
+    баг с 401 в проде (offline-тесты самого алгоритма проходят чисто, значит дело
+    либо в токене/окружении, либо в форме initData, которую реально шлёт Telegram)."""
     if not init_data:
+        logger.warning("validate_init_data: initData пустой")
         return None
+
     pairs = parse_qsl(init_data, keep_blank_values=True)
     data = dict(pairs)
     received_hash = data.pop("hash", None)
     if not received_hash:
+        logger.warning("validate_init_data: нет поля hash. Поля: %s", sorted(data.keys()))
         return None
 
     check_string = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
-    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    token = bot_token.strip()
+    secret_key = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
     computed_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(computed_hash, received_hash):
+        logger.warning(
+            "validate_init_data: подпись не совпала. token_len raw=%s stripped=%s, "
+            "поля=%s, computed=%s…, received=%s…",
+            len(bot_token), len(token),
+            sorted(data.keys()), computed_hash[:12], received_hash[:12],
+        )
         return None
 
     auth_date = data.get("auth_date")
     if auth_date and time.time() - int(auth_date) > INIT_DATA_MAX_AGE:
+        logger.warning("validate_init_data: initData протух (auth_date=%s)", auth_date)
         return None
 
     if "user" in data:
         try:
             data["user"] = json.loads(data["user"])
         except (json.JSONDecodeError, TypeError):
+            logger.warning("validate_init_data: не смог распарсить поле user: %r", data["user"])
             data["user"] = None
     return data
 
