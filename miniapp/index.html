@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Запись к тренеру</title>
+<link rel="stylesheet" href="style.css" />
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="tabs" class="tabs">
+    <button class="tab active" data-tab="book">📅 Записаться</button>
+    <button class="tab" data-tab="my">🗓 Мои записи</button>
+  </div>
+
+  <div id="header" class="header"></div>
+
+  <div id="book-view" class="view">
+    <div id="days" class="days"></div>
+    <div id="slots" class="slots"></div>
+    <div id="book-empty" class="empty" hidden>У этого тренера пока нет свободного времени 😔</div>
+  </div>
+
+  <div id="my-view" class="view" hidden>
+    <div id="my-list" class="my-list"></div>
+    <div id="my-empty" class="empty" hidden>Пока нет записей 🗓</div>
+  </div>
+
+  <div id="confirm-overlay" class="overlay" hidden>
+    <div class="confirm-card">
+      <div id="confirm-text" class="confirm-text"></div>
+      <div class="confirm-actions">
+        <button id="confirm-yes" class="btn btn-primary">✅ Да</button>
+        <button id="confirm-no" class="btn btn-secondary">❌ Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

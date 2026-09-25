@@ -31,11 +31,14 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    WebAppInfo,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+from aiohttp import web as aioweb
 
 import db
+import webapp
 
 load_dotenv()
 
@@ -56,6 +59,8 @@ RECUR_WEEKS = 8  # на сколько недель вперёд генерир�
 SUPPORT_CONTACT = "@gmqzn"  # по вопросам к боту пишут сюда
 ADMIN_ID = 660762742  # твой telegram id — только тебе доступен /reset_all
 MSK = ZoneInfo("Europe/Moscow")
+MINI_APP_URL = os.getenv("MINI_APP_URL", "").rstrip("/")  # базовый https-домен для мини-приложения
+PORT = int(os.getenv("PORT", "8080"))
 
 
 def now_msk() -> datetime:
@@ -114,12 +119,18 @@ def trainer_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def client_menu() -> ReplyKeyboardMarkup:
+def client_menu(trainer_id: int | None = None) -> ReplyKeyboardMarkup:
+    """Если настроен MINI_APP_URL — кнопки открывают мини-приложение (календарь) вместо
+    старого сценария на инлайн-кнопках. Без него (или без trainer_id) — старое поведение."""
+    if MINI_APP_URL and trainer_id:
+        base = f"{MINI_APP_URL}/miniapp/index.html?trainer_id={trainer_id}"
+        book_button = KeyboardButton(text="📅 Записаться", web_app=WebAppInfo(url=base))
+        my_button = KeyboardButton(text="🗓 Мои записи", web_app=WebAppInfo(url=f"{base}#my"))
+    else:
+        book_button = KeyboardButton(text="🔍 Записаться")
+        my_button = KeyboardButton(text="🗓 Мои записи")
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🔍 Записаться")],
-            [KeyboardButton(text="🗓 Мои записи")],
-        ],
+        keyboard=[[book_button], [my_button]],
         resize_keyboard=True,
     )
 
@@ -238,7 +249,7 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject)
     await message.answer(
         f"👋 <b>Привет!</b> Это бот записи к тренеру <b>{esc(bound_trainer['name'])}</b>.\n"
         f"Выбирай, что нужно 👇 (подсказка — команда /help)",
-        reply_markup=client_menu(),
+        reply_markup=client_menu(trainer_id),
     )
 
 
@@ -292,8 +303,9 @@ async def cmd_cancel(message: Message, state: FSMContext):
     if db.is_trainer(message.from_user.id):
         await message.answer(text, reply_markup=trainer_menu())
         return
-    if db.get_client_trainer(message.from_user.id):
-        await message.answer(text, reply_markup=client_menu())
+    client_trainer_id = db.get_client_trainer(message.from_user.id)
+    if client_trainer_id:
+        await message.answer(text, reply_markup=client_menu(client_trainer_id))
         return
     await message.answer(text)
 
@@ -1086,6 +1098,15 @@ async def main():
     scheduler.add_job(send_reminders, "interval", minutes=5)
     scheduler.add_job(send_db_backup, "cron", hour=6, minute=0, timezone=MSK)
     scheduler.start()
+
+    # Веб-сервер мини-приложения (API + статика) — крутится в этом же процессе,
+    # рядом с long polling бота, на порту, который выдаёт Railway.
+    app = webapp.create_app(bot, BOT_TOKEN)
+    runner = aioweb.AppRunner(app)
+    await runner.setup()
+    site = aioweb.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info("Веб-сервер мини-приложения запущен на порту %s", PORT)
 
     logger.info("Бот запущен")
     await dp.start_polling(bot)
