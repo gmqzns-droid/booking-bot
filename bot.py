@@ -25,6 +25,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message,
     CallbackQuery,
+    ErrorEvent,
+    FSInputFile,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
@@ -81,6 +83,8 @@ class RecurSchedule(StatesGroup):
 class EditProfile(StatesGroup):
     waiting_name = State()
     waiting_specialty = State()
+    waiting_price = State()
+    waiting_duration = State()
 
 
 # ---------- Утилиты ----------
@@ -168,6 +172,18 @@ def recur_summary(selected_days: list[int], hh: int, mm: int, added: int, skippe
     return text
 
 
+def trainer_price_line(trainer) -> str:
+    """Строка с ценой/длительностью тренировки, если тренер их указал."""
+    parts = []
+    if trainer["duration_min"]:
+        parts.append(f"{trainer['duration_min']} мин")
+    if trainer["price"]:
+        parts.append(f"{trainer['price']}₽")
+    if not parts:
+        return ""
+    return "\n💳 " + " · ".join(parts)
+
+
 async def get_contact_line(trainer_id: int) -> str:
     try:
         chat = await bot.get_chat(trainer_id)
@@ -248,10 +264,12 @@ async def cmd_help(message: Message):
             "➕ <b>Добавить время</b> — одна тренировка на конкретный день\n"
             "🔁 <b>Еженедельно</b> — повторяющееся расписание (например, Пн/Ср/Пт в одно время) "
             f"сразу на {RECUR_WEEKS} недель вперёд\n"
-            "📋 <b>Мои записи</b> — все слоты, занятые и свободные; нажми, чтобы отменить\n"
-            "⚙️ <b>Профиль</b> — изменить имя или специальность\n"
+            "📋 <b>Мои записи</b> — все слоты, занятые и свободные; нажми, чтобы отменить. "
+            "Там же можно отметить, если клиент не пришёл на недавнюю тренировку\n"
+            "⚙️ <b>Профиль</b> — имя, специальность, цена, длительность и список твоих клиентов\n"
             "🔗 <b>Моя ссылка</b> — персональная ссылка для клиентов\n\n"
-            "Когда клиент бронирует время, тебе приходит уведомление с его контактом.\n\n"
+            "Когда клиент бронирует время, тебе приходит уведомление с его контактом.\n"
+            "Если запутался в сценарии — /cancel вернёт в меню.\n\n"
             f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}",
             reply_markup=trainer_menu(),
         )
@@ -260,9 +278,24 @@ async def cmd_help(message: Message):
             "🙋 <b>Как пользоваться ботом</b>\n\n"
             "🔍 <b>Записаться</b> — выбрать день и время у своего тренера\n"
             "🗓 <b>Мои записи</b> — твои записи; нажми, чтобы отменить\n\n"
-            "Бот сам напомнит о тренировке за 24 часа и за час до неё.\n\n"
+            "Бот сам напомнит о тренировке за 24 часа и за час до неё.\n"
+            "Если запутался в сценарии — /cancel вернёт в меню.\n\n"
             f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}",
         )
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    had_state = (await state.get_state()) is not None
+    await state.clear()
+    text = "Отменил текущее действие." if had_state else "Нечего отменять — ты и так ни в каком сценарии."
+    if db.is_trainer(message.from_user.id):
+        await message.answer(text, reply_markup=trainer_menu())
+        return
+    if db.get_client_trainer(message.from_user.id):
+        await message.answer(text, reply_markup=client_menu())
+        return
+    await message.answer(text)
 
 
 @dp.message(Command("reset_all"))
@@ -330,16 +363,25 @@ async def trainer_profile(message: Message):
     if not trainer:
         return
     specialty = trainer["specialty"] or "не указана"
+    price = f"{trainer['price']}₽" if trainer["price"] else "не указана"
+    duration = f"{trainer['duration_min']} мин" if trainer["duration_min"] else "не указана"
+    clients_count = db.count_clients(message.from_user.id)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Изменить имя", callback_data="editname")],
             [InlineKeyboardButton(text="✏️ Изменить специальность", callback_data="editspecialty")],
+            [InlineKeyboardButton(text="💰 Изменить цену", callback_data="editprice")],
+            [InlineKeyboardButton(text="⏱ Изменить длительность", callback_data="editduration")],
+            [InlineKeyboardButton(text="👥 Мои клиенты", callback_data="listclients")],
         ]
     )
     await message.answer(
         f"⚙️ <b>Твой профиль</b>\n"
         f"Имя: <b>{esc(trainer['name'])}</b>\n"
-        f"Специальность: <b>{esc(specialty)}</b>",
+        f"Специальность: <b>{esc(specialty)}</b>\n"
+        f"Цена: <b>{price}</b>\n"
+        f"Длительность: <b>{duration}</b>\n"
+        f"Клиентов: <b>{clients_count}</b>",
         reply_markup=kb,
     )
 
@@ -378,6 +420,79 @@ async def edit_specialty_finish(message: Message, state: FSMContext):
     db.update_trainer_profile(message.from_user.id, specialty=new_specialty)
     await state.clear()
     await message.answer(f"✅ Специальность обновлена: <b>{esc(new_specialty)}</b>", reply_markup=trainer_menu())
+
+
+@dp.callback_query(F.data == "editprice")
+async def edit_price_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(EditProfile.waiting_price)
+    await callback.message.edit_text(
+        "✏️ Напиши цену тренировки в рублях (просто число, например <b>1500</b>).\n"
+        "Чтобы убрать цену — пришли «-»."
+    )
+    await callback.answer()
+
+
+@dp.message(StateFilter(EditProfile.waiting_price))
+async def edit_price_finish(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли цену числом текстом.")
+        return
+    text = message.text.strip()
+    if text == "-":
+        db.set_trainer_price(message.from_user.id, None)
+        await state.clear()
+        await message.answer("✅ Цена убрана из профиля.", reply_markup=trainer_menu())
+        return
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("🤔 Пришли положительное число, например <b>1500</b>, или «-», чтобы убрать цену.")
+        return
+    db.set_trainer_price(message.from_user.id, int(text))
+    await state.clear()
+    await message.answer(f"✅ Цена обновлена: <b>{int(text)}₽</b>", reply_markup=trainer_menu())
+
+
+@dp.callback_query(F.data == "editduration")
+async def edit_duration_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(EditProfile.waiting_duration)
+    await callback.message.edit_text(
+        "✏️ Напиши длительность тренировки в минутах (например <b>60</b>).\n"
+        "Чтобы убрать длительность — пришли «-»."
+    )
+    await callback.answer()
+
+
+@dp.message(StateFilter(EditProfile.waiting_duration))
+async def edit_duration_finish(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли длительность числом текстом.")
+        return
+    text = message.text.strip()
+    if text == "-":
+        db.set_trainer_duration(message.from_user.id, None)
+        await state.clear()
+        await message.answer("✅ Длительность убрана из профиля.", reply_markup=trainer_menu())
+        return
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("🤔 Пришли положительное число минут, например <b>60</b>, или «-», чтобы убрать.")
+        return
+    db.set_trainer_duration(message.from_user.id, int(text))
+    await state.clear()
+    await message.answer(f"✅ Длительность обновлена: <b>{int(text)} мин</b>", reply_markup=trainer_menu())
+
+
+@dp.callback_query(F.data == "listclients")
+async def trainer_clients_list(callback: CallbackQuery):
+    clients = db.list_clients(callback.from_user.id)
+    if not clients:
+        await callback.answer("Пока нет ни одного клиента.", show_alert=True)
+        return
+    lines = ["👥 <b>Твои клиенты</b>"]
+    for c in clients:
+        name = esc(c["name"] or "без имени")
+        contact = f" (@{esc(c['username'])})" if c["username"] else ""
+        lines.append(f"• {name}{contact}")
+    await callback.message.answer("\n".join(lines))
+    await callback.answer()
 
 
 # ---------- Тренер: добавление одного слота ----------
@@ -627,6 +742,18 @@ async def trainer_my_slots(message: Message):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
     )
 
+    recent = db.list_recent_past_bookings(message.from_user.id)
+    if recent:
+        ns_rows = []
+        for r in recent:
+            contact = f" (@{r['client_username']})" if r["client_username"] else ""
+            label = f"{fmt_slot(r['slot_dt'])} — {r['client_name']}{contact}"
+            ns_rows.append([InlineKeyboardButton(text=f"❗ {label}", callback_data=f"noshowask:{r['id']}")])
+        await message.answer(
+            "❗ <b>Недавние тренировки</b>\nЕсли клиент не пришёл — отметь неявку:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=ns_rows),
+        )
+
 
 @dp.callback_query(F.data.startswith("trainercancelask:"))
 async def trainer_cancel_ask(callback: CallbackQuery):
@@ -669,6 +796,39 @@ async def trainer_cancel_slot(callback: CallbackQuery):
             logger.warning("Не удалось уведомить клиента %s", slot["client_id"])
 
 
+@dp.callback_query(F.data.startswith("noshowask:"))
+async def no_show_ask(callback: CallbackQuery):
+    slot_id = int(callback.data.split(":")[1])
+    slot = db.get_slot(slot_id)
+    if not slot or slot["trainer_id"] != callback.from_user.id:
+        await callback.answer("Не нашёл эту тренировку.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"Отметить, что <b>{esc(slot['client_name'])}</b> не пришёл(шла) на "
+        f"<b>{fmt_slot(slot['slot_dt'])}</b>?",
+        reply_markup=confirm_kb(f"noshow:{slot_id}", "noshowno"),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "noshowno")
+async def no_show_no(callback: CallbackQuery):
+    await callback.message.edit_text("Ок, не отмечаю.")
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("noshow:"))
+async def no_show_confirm(callback: CallbackQuery):
+    slot_id = int(callback.data.split(":")[1])
+    slot = db.get_slot(slot_id)
+    if not slot or slot["trainer_id"] != callback.from_user.id:
+        await callback.answer("Не нашёл эту тренировку.", show_alert=True)
+        return
+    db.mark_no_show(slot_id)
+    await callback.message.edit_text(f"❗ Отметил неявку: <b>{esc(slot['client_name'])}</b>.")
+    await callback.answer()
+
+
 # ---------- Клиент: запись к своему тренеру ----------
 
 @dp.message(F.text == "🔍 Записаться")
@@ -691,7 +851,9 @@ async def show_days(chat_id: int, trainer_id: int):
             for d in days
         ]
     )
-    await bot.send_message(chat_id, "🗓 Свободные дни:", reply_markup=kb)
+    trainer = db.get_trainer(trainer_id)
+    price_line = trainer_price_line(trainer) if trainer else ""
+    await bot.send_message(chat_id, f"🗓 Свободные дни:{price_line}", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("pickday:"))
@@ -721,8 +883,10 @@ async def client_book_ask(callback: CallbackQuery):
     if not slot or slot["status"] != "free":
         await callback.answer("Увы, этот слот уже заняли.", show_alert=True)
         return
+    trainer = db.get_trainer(slot["trainer_id"])
+    price_line = trainer_price_line(trainer) if trainer else ""
     await callback.message.edit_text(
-        f"Записаться на <b>{fmt_slot(slot['slot_dt'])}</b>?",
+        f"Записаться на <b>{fmt_slot(slot['slot_dt'])}</b>?{price_line}",
         reply_markup=confirm_kb(f"booknow:{slot_id}", "bookcancel"),
     )
     await callback.answer()
@@ -819,6 +983,40 @@ async def client_cancel_booking(callback: CallbackQuery):
         logger.warning("Не удалось уведомить тренера")
 
 
+# ---------- Обработка ошибок ----------
+
+@dp.error()
+async def error_handler(event: ErrorEvent):
+    """Ловит все необработанные исключения, чтобы бот не молчал и не падал молча:
+    логирует, шлёт тебе алерт в личку и отвечает юзеру, что что-то пошло не так."""
+    logger.exception("Необработанное исключение", exc_info=event.exception)
+
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ <b>Ошибка в боте</b>\n<code>{esc(str(event.exception))}</code>",
+        )
+    except Exception:
+        logger.warning("Не удалось отправить алерт об ошибке админу")
+
+    try:
+        update = event.update
+        chat_id = None
+        if update.message:
+            chat_id = update.message.chat.id
+        elif update.callback_query and update.callback_query.message:
+            chat_id = update.callback_query.message.chat.id
+        if chat_id:
+            await bot.send_message(
+                chat_id,
+                "⚠️ Что-то пошло не так. Попробуй ещё раз или напиши /cancel.",
+            )
+    except Exception:
+        logger.warning("Не удалось уведомить пользователя об ошибке")
+
+    return True
+
+
 # ---------- Напоминания ----------
 
 async def send_reminders():
@@ -849,6 +1047,18 @@ async def send_reminders():
         db.mark_reminder_sent(slot["id"], "reminder_1h_sent")
 
 
+async def send_db_backup():
+    """Раз в сутки шлёт файл базы тебе в личку — на случай, если volume на Railway когда-нибудь потеряется."""
+    try:
+        await bot.send_document(
+            ADMIN_ID,
+            FSInputFile(db.DB_PATH),
+            caption=f"🗄 Бэкап базы на {now_msk().strftime('%Y-%m-%d %H:%M')} (МСК)",
+        )
+    except Exception:
+        logger.warning("Не удалось отправить бэкап базы")
+
+
 async def setup_bot_profile():
     """Описание бота в профиле Telegram — со ссылкой на поддержку."""
     try:
@@ -874,6 +1084,7 @@ async def main():
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_reminders, "interval", minutes=5)
+    scheduler.add_job(send_db_backup, "cron", hour=6, minute=0, timezone=MSK)
     scheduler.start()
 
     logger.info("Бот запущен")

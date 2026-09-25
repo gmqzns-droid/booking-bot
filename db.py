@@ -1,7 +1,7 @@
 """Слой работы с базой данных (SQLite). v4: контакты, привязка клиента к тренеру, часовой пояс."""
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 DB_PATH = "booking.db"
@@ -53,6 +53,7 @@ def init_db():
                 client_name TEXT,
                 reminder_24h_sent INTEGER NOT NULL DEFAULT 0,
                 reminder_1h_sent INTEGER NOT NULL DEFAULT 0,
+                no_show INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             )
             """
@@ -73,6 +74,9 @@ def init_db():
         )
         # Миграции для более старых баз (например, на Railway после обновления кода)
         _ensure_column(conn, "slots", "client_username", "TEXT")
+        _ensure_column(conn, "slots", "no_show", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "trainers", "price", "INTEGER")
+        _ensure_column(conn, "trainers", "duration_min", "INTEGER")
 
 
 # ---------- Тренеры ----------
@@ -92,6 +96,18 @@ def update_trainer_profile(trainer_id: int, name: str | None = None, specialty: 
             conn.execute("UPDATE trainers SET name=? WHERE id=?", (name, trainer_id))
         if specialty is not None:
             conn.execute("UPDATE trainers SET specialty=? WHERE id=?", (specialty, trainer_id))
+
+
+def set_trainer_price(trainer_id: int, price: int | None):
+    """price=None — убрать цену (не показывать клиенту)."""
+    with get_conn() as conn:
+        conn.execute("UPDATE trainers SET price=? WHERE id=?", (price, trainer_id))
+
+
+def set_trainer_duration(trainer_id: int, duration_min: int | None):
+    """duration_min=None — убрать длительность (не показывать клиенту)."""
+    with get_conn() as conn:
+        conn.execute("UPDATE trainers SET duration_min=? WHERE id=?", (duration_min, trainer_id))
 
 
 def get_trainer(trainer_id: int):
@@ -139,6 +155,21 @@ def get_client_trainer(client_id: int):
     with get_conn() as conn:
         row = conn.execute("SELECT trainer_id FROM clients WHERE id=?", (client_id,)).fetchone()
     return row["trainer_id"] if row else None
+
+
+def list_clients(trainer_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM clients WHERE trainer_id=? ORDER BY created_at DESC", (trainer_id,)
+        ).fetchall()
+
+
+def count_clients(trainer_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM clients WHERE trainer_id=?", (trainer_id,)
+        ).fetchone()
+    return row["c"] if row else 0
 
 
 # ---------- Слоты ----------
@@ -214,6 +245,27 @@ def free_up_slot(slot_id: int) -> bool:
             "reminder_24h_sent=0, reminder_1h_sent=0 WHERE id=?",
             (slot_id,),
         )
+        return cur.rowcount > 0
+
+
+def list_recent_past_bookings(trainer_id: int, hours: int = 48):
+    """Недавно прошедшие занятые слоты (за последние `hours` часов), ещё не отмеченные неявкой —
+    чтобы тренер мог отметить, что клиент не пришёл."""
+    with get_conn() as conn:
+        now = now_msk()
+        window_start = (now - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
+        window_end = now.strftime("%Y-%m-%d %H:%M")
+        rows = conn.execute(
+            "SELECT * FROM slots WHERE trainer_id=? AND status='booked' AND no_show=0 "
+            "AND slot_dt >= ? AND slot_dt < ? ORDER BY slot_dt DESC",
+            (trainer_id, window_start, window_end),
+        ).fetchall()
+    return rows
+
+
+def mark_no_show(slot_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("UPDATE slots SET no_show=1 WHERE id=? AND status='booked'", (slot_id,))
         return cur.rowcount > 0
 
 
