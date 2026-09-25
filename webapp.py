@@ -217,10 +217,23 @@ def create_app(bot, bot_token: str) -> web.Application:
 
         return web.json_response({"ok": True})
 
+    async def handle_debug(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        logger.warning(
+            "miniapp debug: platform=%r version=%r initData_len=%s initDataUnsafe=%s ua=%r",
+            body.get("platform"), body.get("version"), body.get("initData_len"),
+            body.get("initDataUnsafe"), request.headers.get("User-Agent"),
+        )
+        return web.json_response({"ok": True})
+
     app.router.add_get("/api/schedule", handle_schedule)
     app.router.add_post("/api/my", handle_my_bookings)
     app.router.add_post("/api/book", handle_book)
     app.router.add_post("/api/cancel", handle_cancel)
+    app.router.add_post("/api/debug", handle_debug)
     app.router.add_static("/miniapp/", path=MINIAPP_DIR, show_index=False)
 
     async def handle_root(request: web.Request) -> web.Response:

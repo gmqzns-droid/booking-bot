@@ -235,6 +235,28 @@
     return div.innerHTML;
   }
 
+  function sendDebug() {
+    try {
+      const info = {
+        platform: tg ? tg.platform : null,
+        version: tg ? tg.version : null,
+        initData_len: tg ? (tg.initData || "").length : null,
+        initDataUnsafe: tg ? (tg.initDataUnsafe && Object.keys(tg.initDataUnsafe).length ? tg.initDataUnsafe : null) : null,
+      };
+      fetch("/api/debug", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(info),
+      }).catch(() => {});
+      // Временный видимый баннер — чтобы сразу было видно на экране, без логов.
+      if (!tg) {
+        showToast("Telegram.WebApp не найден");
+      } else if (!tg.initData) {
+        showToast("Диагностика: initData пустой, platform=" + tg.platform + " v" + tg.version);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   function init() {
     if (tg) {
       tg.ready();
@@ -242,6 +264,7 @@
       applyTheme();
     }
     setupTabs();
+    sendDebug();
     if (!trainerId) {
       headerEl.textContent = "Не нашёл тренера — открой запись из бота ещё раз.";
       return;
