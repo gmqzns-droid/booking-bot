@@ -13,6 +13,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from html import escape
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -50,6 +51,13 @@ MONTHS_RU = ["", "января", "февраля", "марта", "апреля",
 QUICK_TIMES = ["09:00", "10:00", "11:00", "12:00", "14:00", "15:00",
                "16:00", "17:00", "18:00", "19:00", "20:00"]
 RECUR_WEEKS = 8  # на сколько недель вперёд генерировать повторяющееся расписание
+MSK = ZoneInfo("Europe/Moscow")
+
+
+def now_msk() -> datetime:
+    """Текущее время по Москве — сервер бота крутится не в московском часовом поясе,
+    поэтому весь расчёт 'сегодня/сейчас' идёт через эту функцию, а не datetime.now()."""
+    return datetime.now(MSK)
 
 
 # ---------- FSM состояния ----------
@@ -111,7 +119,7 @@ def client_menu() -> ReplyKeyboardMarkup:
 
 
 def next_14_days() -> list[str]:
-    return [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(14)]
+    return [(now_msk() + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(14)]
 
 
 def weekday_picker_kb(selected: list[int]) -> InlineKeyboardMarkup:
@@ -132,7 +140,7 @@ def weekday_picker_kb(selected: list[int]) -> InlineKeyboardMarkup:
 
 def generate_recurring_slots(trainer_id: int, selected_days: list[int], hh: int, mm: int) -> tuple[int, int]:
     """Создаёт конкретные слоты на RECUR_WEEKS недель вперёд для выбранных дней недели."""
-    today = datetime.now().date()
+    today = now_msk().date()
     added = skipped = 0
     for wd in selected_days:
         delta = (wd - today.weekday()) % 7
@@ -257,6 +265,9 @@ async def cmd_help(message: Message):
 
 @dp.message(StateFilter(TrainerOnboarding.waiting_name))
 async def onb_name(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли имя текстом.")
+        return
     await state.update_data(name=message.text.strip())
     await state.set_state(TrainerOnboarding.waiting_specialty)
     await message.answer("👍 А чем занимаешься? Например: плавание, теннис, репетиторство…")
@@ -264,6 +275,9 @@ async def onb_name(message: Message, state: FSMContext):
 
 @dp.message(StateFilter(TrainerOnboarding.waiting_specialty))
 async def onb_specialty(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли специальность текстом.")
+        return
     data = await state.get_data()
     db.register_trainer(message.from_user.id, data["name"], message.text.strip())
     await state.clear()
@@ -322,6 +336,9 @@ async def edit_name_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(EditProfile.waiting_name))
 async def edit_name_finish(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли имя текстом.")
+        return
     new_name = message.text.strip()
     db.update_trainer_profile(message.from_user.id, name=new_name)
     await state.clear()
@@ -337,6 +354,9 @@ async def edit_specialty_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(EditProfile.waiting_specialty))
 async def edit_specialty_finish(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли специальность текстом.")
+        return
     new_specialty = message.text.strip()
     db.update_trainer_profile(message.from_user.id, specialty=new_specialty)
     await state.clear()
@@ -398,6 +418,9 @@ async def add_slot_custom_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(AddSlot.waiting_custom_time))
 async def add_slot_custom_finish(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли время текстом, формат ЧЧ:ММ, например 13:30")
+        return
     data = await state.get_data()
     day = data["custom_day"]
     text = message.text.strip()
@@ -495,6 +518,9 @@ async def recur_custom_time_start(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(RecurSchedule.waiting_custom_time))
 async def recur_custom_time_finish(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("🤔 Пришли время текстом, формат ЧЧ:ММ, например 13:30")
+        return
     text = message.text.strip()
     try:
         hh, mm = map(int, text.split(":"))
@@ -672,7 +698,7 @@ async def client_cancel_booking(callback: CallbackQuery):
 # ---------- Напоминания ----------
 
 async def send_reminders():
-    now = datetime.now()
+    now = now_msk()
 
     win24_start = (now + timedelta(hours=23)).strftime("%Y-%m-%d %H:%M")
     win24_end = (now + timedelta(hours=25)).strftime("%Y-%m-%d %H:%M")

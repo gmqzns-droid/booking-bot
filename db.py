@@ -1,9 +1,16 @@
-"""Слой работы с базой данных (SQLite). v3: контакты, редактирование профиля, специальности."""
+"""Слой работы с базой данных (SQLite). v4: контакты, привязка клиента к тренеру, часовой пояс."""
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 DB_PATH = "booking.db"
+MSK = ZoneInfo("Europe/Moscow")
+
+
+def now_msk() -> datetime:
+    """Текущее время по Москве — бот считает 'сегодня/сейчас' по нему, а не по серверу."""
+    return datetime.now(MSK)
 
 
 @contextmanager
@@ -75,7 +82,7 @@ def register_trainer(trainer_id: int, name: str, specialty: str = ""):
         conn.execute(
             "INSERT OR REPLACE INTO trainers (id, name, specialty, created_at) "
             "VALUES (?, ?, ?, COALESCE((SELECT created_at FROM trainers WHERE id=?), ?))",
-            (trainer_id, name, specialty, trainer_id, datetime.now().isoformat()),
+            (trainer_id, name, specialty, trainer_id, now_msk().isoformat()),
         )
 
 
@@ -124,7 +131,7 @@ def link_client(client_id: int, trainer_id: int, name: str | None = None, userna
         conn.execute(
             "INSERT OR REPLACE INTO clients (id, trainer_id, name, username, created_at) "
             "VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM clients WHERE id=?), ?))",
-            (client_id, trainer_id, name, username, client_id, datetime.now().isoformat()),
+            (client_id, trainer_id, name, username, client_id, now_msk().isoformat()),
         )
 
 
@@ -141,7 +148,7 @@ def add_slot(trainer_id: int, slot_dt: str) -> bool:
         with get_conn() as conn:
             conn.execute(
                 "INSERT INTO slots (trainer_id, slot_dt, status, created_at) VALUES (?, ?, 'free', ?)",
-                (trainer_id, slot_dt, datetime.now().isoformat()),
+                (trainer_id, slot_dt, now_msk().isoformat()),
             )
         return True
     except sqlite3.IntegrityError:
@@ -154,7 +161,7 @@ def list_free_days(trainer_id: int, limit_days: int = 14):
         rows = conn.execute(
             "SELECT DISTINCT substr(slot_dt, 1, 10) AS day FROM slots "
             "WHERE trainer_id=? AND status='free' AND slot_dt >= ? ORDER BY day LIMIT ?",
-            (trainer_id, datetime.now().strftime("%Y-%m-%d %H:%M"), limit_days),
+            (trainer_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit_days),
         ).fetchall()
     return [r["day"] for r in rows]
 
@@ -164,7 +171,7 @@ def list_free_slots_for_day(trainer_id: int, day: str):
         rows = conn.execute(
             "SELECT * FROM slots WHERE trainer_id=? AND status='free' "
             "AND substr(slot_dt,1,10)=? AND slot_dt >= ? ORDER BY slot_dt",
-            (trainer_id, day, datetime.now().strftime("%Y-%m-%d %H:%M")),
+            (trainer_id, day, now_msk().strftime("%Y-%m-%d %H:%M")),
         ).fetchall()
     return rows
 
@@ -174,7 +181,7 @@ def list_all_upcoming(trainer_id: int, limit: int = 50):
         rows = conn.execute(
             "SELECT * FROM slots WHERE trainer_id=? AND status != 'cancelled' AND slot_dt >= ? "
             "ORDER BY slot_dt LIMIT ?",
-            (trainer_id, datetime.now().strftime("%Y-%m-%d %H:%M"), limit),
+            (trainer_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit),
         ).fetchall()
     return rows
 
@@ -216,7 +223,7 @@ def list_client_bookings(client_id: int):
             "SELECT slots.*, trainers.name AS trainer_name FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
             "WHERE client_id=? AND status='booked' AND slot_dt >= ? ORDER BY slot_dt",
-            (client_id, datetime.now().strftime("%Y-%m-%d %H:%M")),
+            (client_id, now_msk().strftime("%Y-%m-%d %H:%M")),
         ).fetchall()
     return rows
 
