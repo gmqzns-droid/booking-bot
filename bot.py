@@ -22,6 +22,7 @@ from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -120,18 +121,26 @@ def trainer_menu() -> ReplyKeyboardMarkup:
 
 
 def client_menu(trainer_id: int | None = None) -> ReplyKeyboardMarkup:
-    """Если настроен MINI_APP_URL — кнопки открывают мини-приложение (календарь) вместо
-    старого сценария на инлайн-кнопках. Без него (или без trainer_id) — старое поведение."""
-    if MINI_APP_URL and trainer_id:
-        base = f"{MINI_APP_URL}/miniapp/index.html?trainer_id={trainer_id}"
-        book_button = KeyboardButton(text="📅 Записаться", web_app=WebAppInfo(url=base))
-        my_button = KeyboardButton(text="🗓 Мои записи", web_app=WebAppInfo(url=f"{base}#my"))
-    else:
-        book_button = KeyboardButton(text="🔍 Записаться")
-        my_button = KeyboardButton(text="🗓 Мои записи")
+    """Обычная текстовая reply-клавиатура. Мини-приложение открывается не отсюда:
+    reply-кнопки с web_app на практике ненадёжно передают initData (подтверждено
+    логами — initData и initDataUnsafe приходят вообще пустыми на iOS), поэтому
+    открытие мини-аппа теперь идёт через отдельное inline-сообщение (см.
+    miniapp_open_kb / хендлеры "🔍 Записаться" и "🗓 Мои записи" ниже)."""
     return ReplyKeyboardMarkup(
-        keyboard=[[book_button], [my_button]],
+        keyboard=[[KeyboardButton(text="🔍 Записаться")], [KeyboardButton(text="🗓 Мои записи")]],
         resize_keyboard=True,
+    )
+
+
+def miniapp_open_kb(trainer_id: int, suffix: str = "") -> InlineKeyboardMarkup | None:
+    """Инлайн-кнопка, открывающая мини-приложение. Инлайн-кнопки с web_app надёжнее
+    передают initData, чем такие же кнопки на reply-клавиатуре. None, если мини-апп
+    не настроен (MINI_APP_URL не задан) — тогда используется старый сценарий."""
+    if not MINI_APP_URL:
+        return None
+    url = f"{MINI_APP_URL}/miniapp/index.html?trainer_id={trainer_id}{suffix}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🚀 Открыть", web_app=WebAppInfo(url=url))]]
     )
 
 
@@ -849,6 +858,10 @@ async def client_book(message: Message):
     if not trainer_id or not db.get_trainer(trainer_id):
         await message.answer("Не нашёл твоего тренера 🤔 Напиши /start ещё раз по ссылке от тренера.")
         return
+    kb = miniapp_open_kb(trainer_id)
+    if kb:
+        await message.answer("📅 Открой календарь и выбери удобное время:", reply_markup=kb)
+        return
     await show_days(message.chat.id, trainer_id)
 
 
@@ -939,6 +952,13 @@ async def client_book_confirm(callback: CallbackQuery):
 
 @dp.message(F.text.in_({"🗓 Мои записи"}))
 async def client_my_bookings(message: Message):
+    trainer_id = db.get_client_trainer(message.from_user.id)
+    if trainer_id:
+        kb = miniapp_open_kb(trainer_id, suffix="#my")
+        if kb:
+            await message.answer("🗓 Открой список своих записей:", reply_markup=kb)
+            return
+
     rows = db.list_client_bookings(message.from_user.id)
     if not rows:
         await message.answer("Пока нет записей 🗓\nЖми «🔍 Записаться».")
@@ -1000,24 +1020,35 @@ async def client_cancel_booking(callback: CallbackQuery):
 @dp.error()
 async def error_handler(event: ErrorEvent):
     """Ловит все необработанные исключения, чтобы бот не молчал и не падал молча:
-    логирует, шлёт тебе алерт в личку и отвечает юзеру, что что-то пошло не так."""
+    логирует, шлёт тебе алерт в личку (с указанием, от какого chat_id пришло
+    исходное обновление, чтобы алерт был actionable) и отвечает юзеру, что
+    что-то пошло не так.
+
+    Исключение: если сама Telegram-ошибка — TelegramForbiddenError (кто-то
+    заблокировал бота), это не баг в коде, а ожидаемое поведение — просто
+    тихо логируем, без алерта в личку, чтобы не отвлекать по пустякам."""
+    update = event.update
+    chat_id = None
+    if update.message:
+        chat_id = update.message.chat.id
+    elif update.callback_query and update.callback_query.message:
+        chat_id = update.callback_query.message.chat.id
+
+    if isinstance(event.exception, TelegramForbiddenError):
+        logger.warning("Заблокировали бота (chat_id=%s) — пропускаю алерт", chat_id)
+        return True
+
     logger.exception("Необработанное исключение", exc_info=event.exception)
 
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"⚠️ <b>Ошибка в боте</b>\n<code>{esc(str(event.exception))}</code>",
+            f"⚠️ <b>Ошибка в боте</b> (chat_id={chat_id})\n<code>{esc(str(event.exception))}</code>",
         )
     except Exception:
         logger.warning("Не удалось отправить алерт об ошибке админу")
 
     try:
-        update = event.update
-        chat_id = None
-        if update.message:
-            chat_id = update.message.chat.id
-        elif update.callback_query and update.callback_query.message:
-            chat_id = update.callback_query.message.chat.id
         if chat_id:
             await bot.send_message(
                 chat_id,
