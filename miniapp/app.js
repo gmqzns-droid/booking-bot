@@ -238,10 +238,17 @@
   function sendDebug() {
     try {
       const info = {
+        telegram_global: !!window.Telegram,
+        webapp_global: !!tg,
         platform: tg ? tg.platform : null,
         version: tg ? tg.version : null,
         initData_len: tg ? (tg.initData || "").length : null,
         initDataUnsafe: tg ? (tg.initDataUnsafe && Object.keys(tg.initDataUnsafe).length ? tg.initDataUnsafe : null) : null,
+        location_hash: window.location.hash || null,
+        location_search: window.location.search || null,
+        referrer: document.referrer || null,
+        is_expanded: tg ? tg.isExpanded : null,
+        viewport_height: tg ? tg.viewportHeight : null,
       };
       fetch("/api/debug", {
         method: "POST",

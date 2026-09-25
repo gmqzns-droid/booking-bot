@@ -223,9 +223,14 @@ def create_app(bot, bot_token: str) -> web.Application:
         except Exception:
             body = {}
         logger.warning(
-            "miniapp debug: platform=%r version=%r initData_len=%s initDataUnsafe=%s ua=%r",
+            "miniapp debug: tg_global=%s webapp_global=%s platform=%r version=%r "
+            "initData_len=%s initDataUnsafe=%s hash=%r search=%r referrer=%r "
+            "expanded=%s vh=%s ua=%r",
+            body.get("telegram_global"), body.get("webapp_global"),
             body.get("platform"), body.get("version"), body.get("initData_len"),
-            body.get("initDataUnsafe"), request.headers.get("User-Agent"),
+            body.get("initDataUnsafe"), body.get("location_hash"), body.get("location_search"),
+            body.get("referrer"), body.get("is_expanded"), body.get("viewport_height"),
+            request.headers.get("User-Agent"),
         )
         return web.json_response({"ok": True})
 
