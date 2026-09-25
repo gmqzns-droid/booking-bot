@@ -29,6 +29,14 @@ MINIAPP_DIR = Path(__file__).parent / "miniapp"
 INIT_DATA_MAX_AGE = 24 * 60 * 60  # сутки — старше не принимаем (защита от replay)
 RECUR_WEEKS = 8
 
+# Версия статики, вычисляется один раз при старте процесса (то есть меняется при каждом
+# деплое). Подставляется в index.html как ?v=... к style.css/app.js — без этого браузер
+# на телефоне может тихо продолжать использовать app.js, закэшированный ЕЩЁ ДО деплоя
+# (index.html при этом честно грузится свежий благодаря no-store, а app.js остаётся
+# старым — то есть страница выглядит "не грузится/не работает", хотя сервер отдаёт
+# актуальный код). Меняющийся ?v= заставляет браузер запросить файл заново.
+_ASSET_VERSION = str(int(time.time()))
+
 DAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 MONTHS_RU = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
@@ -486,14 +494,32 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
 
     async def handle_index(request: web.Request) -> web.Response:
         """index.html отдаём вручную (не через add_static) с no-store — чтобы Telegram/WebKit
-        никогда не показывал закэшированную версию страницы без свежих initData-параметров."""
+        никогда не показывал закэшированную версию страницы без свежих initData-параметров.
+        Заодно подставляем ?v=<версия деплоя> в ссылки на style.css/app.js, чтобы браузер
+        не мог тихо взять их из своего кэша от предыдущего деплоя (см. _ASSET_VERSION выше)."""
         text = (MINIAPP_DIR / "index.html").read_text(encoding="utf-8")
+        text = text.replace('href="style.css"', f'href="style.css?v={_ASSET_VERSION}"')
+        text = text.replace('src="app.js"', f'src="app.js?v={_ASSET_VERSION}"')
         return web.Response(
             text=text, content_type="text/html",
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
+    def make_static_asset_handler(filename: str, content_type: str):
+        async def handler(request: web.Request) -> web.Response:
+            """style.css/app.js тоже отдаём с no-store — на случай, если браузер всё же
+            зайдёт на них напрямую (не через свежий index.html), чтобы не получить старую
+            закэшированную версию в обход cache-busting выше."""
+            text = (MINIAPP_DIR / filename).read_text(encoding="utf-8")
+            return web.Response(
+                text=text, content_type=content_type,
+                headers={"Cache-Control": "no-store, must-revalidate"},
+            )
+        return handler
+
     app.router.add_get("/miniapp/index.html", handle_index)
+    app.router.add_get("/miniapp/style.css", make_static_asset_handler("style.css", "text/css"))
+    app.router.add_get("/miniapp/app.js", make_static_asset_handler("app.js", "application/javascript"))
     app.router.add_static("/miniapp/", path=MINIAPP_DIR, show_index=False)
 
     async def handle_root(request: web.Request) -> web.Response:
