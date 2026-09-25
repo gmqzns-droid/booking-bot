@@ -400,7 +400,7 @@ async def add_slot_pick_day(message: Message):
 async def add_slot_pick_time(callback: CallbackQuery):
     day = callback.data.split(":", 1)[1]
     buttons = [
-        InlineKeyboardButton(text=t, callback_data=f"addtime:{day}:{t}") for t in QUICK_TIMES
+        InlineKeyboardButton(text=t, callback_data=f"addtimeask:{day}:{t}") for t in QUICK_TIMES
     ]
     rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     rows.append([InlineKeyboardButton(text="✏️ Своё время", callback_data=f"addcustom:{day}")])
@@ -411,7 +411,27 @@ async def add_slot_pick_time(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("addtime:"))
+def confirm_kb(yes_data: str, no_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Да", callback_data=yes_data),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=no_data),
+        ]]
+    )
+
+
+@dp.callback_query(F.data.startswith("addtimeask:"))
+async def add_slot_ask(callback: CallbackQuery):
+    _, day, time_str = callback.data.split(":", 2)
+    slot_dt = f"{day} {time_str}"
+    await callback.message.edit_text(
+        f"Добавить <b>{fmt_slot(slot_dt)}</b>?",
+        reply_markup=confirm_kb(f"addtimeconfirm:{day}:{time_str}", "addtimeno"),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("addtimeconfirm:"))
 async def add_slot_confirm(callback: CallbackQuery):
     _, day, time_str = callback.data.split(":", 2)
     slot_dt = f"{day} {time_str}"
@@ -419,6 +439,12 @@ async def add_slot_confirm(callback: CallbackQuery):
         await callback.message.edit_text(f"✅ Добавлено: <b>{fmt_slot(slot_dt)}</b>")
     else:
         await callback.message.edit_text("⚠️ Такое время уже было добавлено ранее.")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "addtimeno")
+async def add_slot_no(callback: CallbackQuery):
+    await callback.message.edit_text("Ок, не добавил.")
     await callback.answer()
 
 
@@ -449,10 +475,10 @@ async def add_slot_custom_finish(message: Message, state: FSMContext):
         return
     slot_dt = f"{day} {hh:02d}:{mm:02d}"
     await state.clear()
-    if db.add_slot(message.from_user.id, slot_dt):
-        await message.answer(f"✅ Добавлено: <b>{fmt_slot(slot_dt)}</b>", reply_markup=trainer_menu())
-    else:
-        await message.answer("⚠️ Такое время уже было добавлено ранее.", reply_markup=trainer_menu())
+    await message.answer(
+        f"Добавить <b>{fmt_slot(slot_dt)}</b>?",
+        reply_markup=confirm_kb(f"addtimeconfirm:{day}:{hh:02d}:{mm:02d}", "addtimeno"),
+    )
 
 
 # ---------- Тренер: повторяющееся расписание ----------
@@ -499,7 +525,7 @@ async def recur_pick_time(callback: CallbackQuery, state: FSMContext):
     if not selected:
         await callback.answer("Выбери хотя бы один день.", show_alert=True)
         return
-    buttons = [InlineKeyboardButton(text=t, callback_data=f"rectime:{t}") for t in QUICK_TIMES]
+    buttons = [InlineKeyboardButton(text=t, callback_data=f"rectimeask:{t}") for t in QUICK_TIMES]
     rows = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     rows.append([InlineKeyboardButton(text="✏️ Своё время", callback_data="rectcustom")])
     rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="reccancel")])
@@ -511,7 +537,24 @@ async def recur_pick_time(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("rectime:"))
+@dp.callback_query(F.data.startswith("rectimeask:"))
+async def recur_ask(callback: CallbackQuery, state: FSMContext):
+    time_str = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    selected = data.get("selected_days", [])
+    if not selected:
+        await callback.answer("Что-то пошло не так, начни заново.", show_alert=True)
+        return
+    days_label = ", ".join(DAYS_RU[i] for i in selected)
+    await callback.message.edit_text(
+        f"Добавить тренировки: <b>{days_label}</b> в <b>{time_str}</b>, "
+        f"на ближайшие {RECUR_WEEKS} недель?",
+        reply_markup=confirm_kb(f"recconfirm:{time_str}", "reccancel"),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("recconfirm:"))
 async def recur_finish(callback: CallbackQuery, state: FSMContext):
     time_str = callback.data.split(":", 1)[1]
     hh, mm = map(int, time_str.split(":"))
@@ -547,12 +590,16 @@ async def recur_custom_time_finish(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     selected = data.get("selected_days", [])
-    await state.clear()
     if not selected:
+        await state.clear()
         await message.answer("Что-то пошло не так, начни заново через «🔁 Еженедельно».", reply_markup=trainer_menu())
         return
-    added, skipped = generate_recurring_slots(message.from_user.id, selected, hh, mm)
-    await message.answer(recur_summary(selected, hh, mm, added, skipped), reply_markup=trainer_menu())
+    days_label = ", ".join(DAYS_RU[d] for d in selected)
+    time_str = f"{hh:02d}:{mm:02d}"
+    await message.answer(
+        f"Добавить тренировки: <b>{days_label}</b> в <b>{time_str}</b>, на ближайшие {RECUR_WEEKS} недель?",
+        reply_markup=confirm_kb(f"recconfirm:{time_str}", "reccancel"),
+    )
 
 
 # ---------- Тренер: мои записи ----------
@@ -574,11 +621,31 @@ async def trainer_my_slots(message: Message):
             label = f"🔴 {fmt_slot(r['slot_dt'])} — {r['client_name']}{contact}"
         else:
             label = f"🟢 {fmt_slot(r['slot_dt'])} — свободно"
-        kb_rows.append([InlineKeyboardButton(text=f"❌ {label}", callback_data=f"trainercancel:{r['id']}")])
+        kb_rows.append([InlineKeyboardButton(text=f"❌ {label}", callback_data=f"trainercancelask:{r['id']}")])
     await message.answer(
         "📋 <b>Твоё расписание</b>\n🟢 свободно · 🔴 занято\nНажми на слот, чтобы отменить:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
     )
+
+
+@dp.callback_query(F.data.startswith("trainercancelask:"))
+async def trainer_cancel_ask(callback: CallbackQuery):
+    slot_id = int(callback.data.split(":")[1])
+    slot = db.get_slot(slot_id)
+    if not slot or slot["trainer_id"] != callback.from_user.id:
+        await callback.answer("Не нашёл этот слот.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"Точно отменить <b>{fmt_slot(slot['slot_dt'])}</b>?",
+        reply_markup=confirm_kb(f"trainercancel:{slot_id}", "trainercancelno"),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "trainercancelno")
+async def trainer_cancel_no(callback: CallbackQuery):
+    await callback.message.edit_text("Ок, не трогаю.")
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("trainercancel:"))
@@ -637,13 +704,33 @@ async def client_day_picked(callback: CallbackQuery):
         return
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"🕐 {r['slot_dt'][-5:]}", callback_data=f"booknow:{r['id']}")]
+            [InlineKeyboardButton(text=f"🕐 {r['slot_dt'][-5:]}", callback_data=f"bookask:{r['id']}")]
             for r in rows
         ]
     )
     await callback.message.edit_text(
         f"📅 <b>{fmt_day(day)}</b> — свободное время:", reply_markup=kb
     )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("bookask:"))
+async def client_book_ask(callback: CallbackQuery):
+    slot_id = int(callback.data.split(":")[1])
+    slot = db.get_slot(slot_id)
+    if not slot or slot["status"] != "free":
+        await callback.answer("Увы, этот слот уже заняли.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"Записаться на <b>{fmt_slot(slot['slot_dt'])}</b>?",
+        reply_markup=confirm_kb(f"booknow:{slot_id}", "bookcancel"),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "bookcancel")
+async def client_book_no(callback: CallbackQuery):
+    await callback.message.edit_text("Ок, не записал(а).")
     await callback.answer()
 
 
@@ -684,12 +771,32 @@ async def client_my_bookings(message: Message):
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"❌ {fmt_slot(r['slot_dt'])} — {r['trainer_name']}",
-                callback_data=f"unbook:{r['id']}",
+                callback_data=f"unbookask:{r['id']}",
             )]
             for r in rows
         ]
     )
     await message.answer("🗓 <b>Твои записи</b>\nНажми, чтобы отменить:", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("unbookask:"))
+async def client_cancel_ask(callback: CallbackQuery):
+    slot_id = int(callback.data.split(":")[1])
+    slot = db.get_slot(slot_id)
+    if not slot or slot["client_id"] != callback.from_user.id:
+        await callback.answer("Не нашёл эту запись.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"Точно отменить запись на <b>{fmt_slot(slot['slot_dt'])}</b>?",
+        reply_markup=confirm_kb(f"unbook:{slot_id}", "unbookno"),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "unbookno")
+async def client_cancel_no(callback: CallbackQuery):
+    await callback.message.edit_text("Ок, оставил как есть.")
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("unbook:"))
