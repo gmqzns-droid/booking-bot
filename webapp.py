@@ -532,6 +532,46 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return web.json_response({"ok": True})
 
     @require_auth
+    async def handle_schedule_close_range(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        staff = _staff_for_provider(user["id"], body.get("staff_id"))
+        if not staff:
+            return web.json_response({"error": "bad staff_id"}, status=400)
+        start_date = (body.get("start_date") or "").strip()
+        end_date = (body.get("end_date") or "").strip()
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            return web.json_response({"error": "bad dates"}, status=400)
+        if end_date < start_date:
+            return web.json_response({"error": "bad range"}, status=400)
+
+        slots = db.list_slots_in_range(user["id"], staff["id"], start_date, end_date)
+        freed = 0
+        cancelled_bookings = 0
+        for slot in slots:
+            was_booked = slot["status"] == "booked"
+            client_id = slot["client_id"]
+            db.cancel_slot(slot["id"])
+            if was_booked:
+                cancelled_bookings += 1
+                if client_id:
+                    try:
+                        await bot.send_message(
+                            client_id,
+                            f"⚠️ Специалист закрыл(а) этот период — запись на "
+                            f"<b>{fmt_slot(slot['slot_dt'])}</b> отменена. Извини за неудобство!",
+                        )
+                    except Exception:
+                        logger.warning("Не удалось уведомить клиента %s о закрытии периода", client_id)
+            else:
+                freed += 1
+        return web.json_response({"ok": True, "freed": freed, "cancelled_bookings": cancelled_bookings})
+
+    @require_auth
     async def handle_slot_noshow(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
@@ -887,6 +927,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/slots/add_recurring", handle_slot_add_recurring)
     app.router.add_post("/api/provider/slots/cancel", handle_slot_cancel)
     app.router.add_post("/api/provider/slots/reschedule", handle_slot_reschedule)
+    app.router.add_post("/api/provider/schedule/close_range", handle_schedule_close_range)
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
     app.router.add_get("/api/provider/reviews", handle_provider_reviews)

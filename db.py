@@ -650,6 +650,18 @@ def list_free_slots_for_day(trainer_id: int, staff_id: int, day: str):
     return rows
 
 
+def list_slots_in_range(trainer_id: int, staff_id: int, start_date: str, end_date: str):
+    """Все ещё активные (free+booked) слоты сотрудника в диапазоне дат [start_date, end_date]
+    включительно — используется для массового закрытия периода (отпуск/выходной)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM slots WHERE trainer_id=? AND staff_id=? AND status IN ('free','booked') "
+            "AND substr(slot_dt,1,10) BETWEEN ? AND ? ORDER BY slot_dt",
+            (trainer_id, staff_id, start_date, end_date),
+        ).fetchall()
+    return rows
+
+
 def list_all_upcoming(trainer_id: int, staff_id: int, limit: int = 50):
     with get_conn() as conn:
         rows = conn.execute(

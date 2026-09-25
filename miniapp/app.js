@@ -284,6 +284,9 @@
     const dates = Object.keys(byDate).sort();
 
     let html = pickerHtml;
+    html += `<div style="display:flex;justify-content:flex-end;margin:-6px 0 2px">
+      <button class="btn btn-ghost btn-sm" id="close-range-btn">🚫 Закрыть период</button>
+    </div>`;
 
     if (data.recent_past && data.recent_past.length) {
       html += '<div class="section-label">Отметить неявку</div><div class="card">';
@@ -327,6 +330,8 @@
         renderProviderSchedule();
       });
     }
+
+    el("close-range-btn").onclick = () => openCloseRangeSheet();
 
     content.querySelectorAll("[data-noshow]").forEach((btn) => {
       btn.onclick = () => {
@@ -382,6 +387,44 @@
           haptic("success");
           renderProviderSchedule();
         } catch (e) { showToast("Не получилось"); }
+      });
+    };
+  }
+
+  function openCloseRangeSheet() {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    openSheet(`
+      <div class="sheet-title">Закрыть период</div>
+      <p class="muted" style="margin-top:-8px">Все свободные слоты за этот период исчезнут, а по существующим записям клиентам придёт уведомление об отмене — так что используй для отпуска или выходных, а не просто чтобы освободить пару часов.</p>
+      <div class="field">
+        <label class="field-label">С какого дня</label>
+        <input class="input" id="close-from" type="date" min="${todayStr}" value="${todayStr}" />
+      </div>
+      <div class="field">
+        <label class="field-label">По какой день</label>
+        <input class="input" id="close-to" type="date" min="${todayStr}" value="${todayStr}" />
+      </div>
+      <button class="btn btn-danger btn-block" id="close-range-submit">Закрыть период</button>
+    `);
+    el("close-range-submit").onclick = async () => {
+      const from = el("close-from").value;
+      const to = el("close-to").value;
+      if (!from || !to) { showToast("Заполни обе даты"); return; }
+      if (to < from) { showToast("Дата «по» раньше даты «с»"); return; }
+      closeSheet();
+      showConfirm(`Закрыть с ${fmtDay(from)} по ${fmtDay(to)}?`, async () => {
+        try {
+          const res = await api("/api/provider/schedule/close_range", {
+            method: "POST",
+            body: JSON.stringify({ staff_id: CURRENT_STAFF_ID, start_date: from, end_date: to }),
+          });
+          haptic("success");
+          const parts = [];
+          if (res.freed) parts.push(`убрано свободных слотов: ${res.freed}`);
+          if (res.cancelled_bookings) parts.push(`отменено записей: ${res.cancelled_bookings}`);
+          showToast(parts.length ? `Готово — ${parts.join(", ")}` : "Готово, период закрыт");
+          renderProviderSchedule();
+        } catch (e) { showToast("Не получилось закрыть период"); }
       });
     };
   }
