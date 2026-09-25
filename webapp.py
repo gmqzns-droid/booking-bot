@@ -200,7 +200,8 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
 
     @require_auth
     async def handle_provider_profile_update(request: web.Request, user: dict) -> web.Response:
-        if not db.get_trainer(user["id"]):
+        trainer = db.get_trainer(user["id"])
+        if not trainer:
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
         if "name" in body:
@@ -208,6 +209,11 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         if "category" in body:
             category = (body.get("category") or "").strip()[:120]
             db.set_trainer_category(user["id"], category, terminology.classify_category(category))
+        if "is_business" in body:
+            want_business = bool(body.get("is_business"))
+            if not want_business and db.count_staff(user["id"]) > 1:
+                return web.json_response({"error": "too many staff"}, status=409)
+            db.set_trainer_is_business(user["id"], want_business)
         return web.json_response({"ok": True})
 
     # ---------- услуги ----------

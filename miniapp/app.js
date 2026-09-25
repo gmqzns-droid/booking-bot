@@ -671,6 +671,16 @@
         <input class="input" id="pf-link" type="text" readonly value="${escapeHtml(PROVIDER.link)}" style="margin-bottom:10px" />
         <button class="btn btn-secondary btn-block" id="pf-copy">Скопировать ссылку</button>
       </div>
+      <div class="card">
+        <div class="card-title">Режим работы</div>
+        <div class="chips" id="pf-mode-chips">
+          <button class="chip${PROVIDER.is_business ? "" : " active"}" data-mode="solo">Я один(а)</button>
+          <button class="chip${PROVIDER.is_business ? " active" : ""}" data-mode="business">Команда/салон</button>
+        </div>
+        <p class="muted" style="margin-top:10px">${PROVIDER.is_business
+          ? "Добавляй сотрудников во вкладке «Сотрудники» — клиент сам выбирает мастера."
+          : "Один специалист. Переключись на «Команда/салон», если нужно добавить других мастеров."}</p>
+      </div>
     `;
     el("pf-save").onclick = async () => {
       const name = el("pf-name").value.trim();
@@ -696,6 +706,28 @@
         showToast("Ссылка скопирована");
       }
     };
+
+    Array.from(el("pf-mode-chips").children).forEach((c) => c.onclick = () => {
+      const wantBusiness = c.dataset.mode === "business";
+      if (wantBusiness === PROVIDER.is_business) return;
+      const doSwitch = async () => {
+        try {
+          await api("/api/provider/profile", { method: "POST", body: JSON.stringify({ is_business: wantBusiness }) });
+          const who = await api("/api/whoami", { method: "POST", body: "{}" });
+          PROVIDER = who.provider;
+          haptic("success");
+          showToast("Готово");
+          startApp("provider");
+        } catch (e) {
+          showToast(e.status === 409 ? "Сначала удали лишних сотрудников — оставь одного" : "Не получилось переключить");
+        }
+      };
+      if (wantBusiness) {
+        doSwitch();
+      } else {
+        showConfirm("Вернуться в режим «Я один(а)»? Останется только один сотрудник (ты).", doSwitch);
+      }
+    });
   }
 
   // ================= КЛИЕНТ =================
