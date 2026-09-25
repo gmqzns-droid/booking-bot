@@ -620,6 +620,30 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return web.json_response({"ok": True})
 
     @require_auth
+    async def handle_provider_broadcast(request: web.Request, user: dict) -> web.Response:
+        trainer = db.get_trainer(user["id"])
+        if not trainer:
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        text = (body.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "empty text"}, status=400)
+        if len(text) > 1000:
+            return web.json_response({"error": "too long"}, status=400)
+
+        clients = [c for c in db.list_clients(user["id"]) if not c["blocked"]]
+        message = f"📢 <b>{esc(trainer['name'])}</b>:\n{esc(text)}"
+        sent = 0
+        failed = 0
+        for c in clients:
+            try:
+                await bot.send_message(c["id"], message)
+                sent += 1
+            except Exception:
+                failed += 1
+        return web.json_response({"ok": True, "sent": sent, "failed": failed, "total": len(clients)})
+
+    @require_auth
     async def handle_provider_stats(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
@@ -991,6 +1015,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
     app.router.add_post("/api/provider/clients/block", handle_client_block)
+    app.router.add_post("/api/provider/broadcast", handle_provider_broadcast)
     app.router.add_get("/api/provider/stats", handle_provider_stats)
     app.router.add_get("/api/provider/reviews", handle_provider_reviews)
     app.router.add_get("/api/provider/promos", handle_promos_list)

@@ -818,6 +818,12 @@
           ? "Добавляй сотрудников во вкладке «Сотрудники» — клиент сам выбирает мастера."
           : "Один специалист. Переключись на «Команда/салон», если нужно добавить других мастеров."}</p>
       </div>
+      <div class="card">
+        <div class="card-title">Рассылка клиентам</div>
+        <p class="muted" style="margin-bottom:10px">Разовое сообщение всем своим клиентам сразу (например «сегодня закрыт(а)» или новость об акции). Заблокированным клиентам не отправляется.</p>
+        <textarea class="input textarea" id="bc-text" rows="3" maxlength="1000" placeholder="Текст сообщения..."></textarea>
+        <button class="btn btn-primary btn-block" id="bc-send" style="margin-top:10px">Отправить всем</button>
+      </div>
       <div class="card" id="pf-stats-card">
         <div class="card-title">Статистика</div>
         <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
@@ -854,6 +860,25 @@
         document.execCommand("copy");
         showToast("Ссылка скопирована");
       }
+    };
+
+    el("bc-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.ctrlKey) el("bc-send").click(); });
+    el("bc-send").onclick = () => {
+      const text = el("bc-text").value.trim();
+      if (!text) { showToast("Напиши текст сообщения"); return; }
+      showConfirm("Отправить это сообщение всем своим клиентам?", async () => {
+        el("bc-send").disabled = true;
+        try {
+          const res = await api("/api/provider/broadcast", { method: "POST", body: JSON.stringify({ text }) });
+          haptic("success");
+          showToast(`Отправлено: ${res.sent} из ${res.total}`);
+          el("bc-text").value = "";
+        } catch (e) {
+          showToast("Не получилось отправить");
+        } finally {
+          el("bc-send").disabled = false;
+        }
+      });
     };
 
     renderStatsCard();
