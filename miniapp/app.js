@@ -754,13 +754,36 @@
     data.clients.forEach((c) => {
       html += `<div class="list-item">
         <div class="list-item-main">
-          <div class="list-item-title">${escapeHtml(c.name || "Без имени")}</div>
+          <div class="list-item-title">${escapeHtml(c.name || "Без имени")}${c.blocked ? " 🚫" : ""}</div>
           <div class="list-item-sub">${c.username ? "@" + escapeHtml(c.username) : ""}</div>
         </div>
+        <button class="btn btn-sm ${c.blocked ? "btn-secondary" : "btn-danger"}" data-block="${c.id}" data-blocked="${c.blocked ? 1 : 0}">
+          ${c.blocked ? "Разблокировать" : "Заблокировать"}
+        </button>
       </div>`;
     });
     html += "</div>";
     content.innerHTML = html;
+
+    content.querySelectorAll("[data-block]").forEach((btn) => {
+      btn.onclick = () => {
+        const clientId = btn.dataset.block;
+        const currentlyBlocked = btn.dataset.blocked === "1";
+        const question = currentlyBlocked
+          ? "Разблокировать клиента? Сможет снова записываться."
+          : "Заблокировать клиента? Больше не сможет записаться к тебе.";
+        showConfirm(question, async () => {
+          try {
+            await api("/api/provider/clients/block", {
+              method: "POST",
+              body: JSON.stringify({ client_id: clientId, blocked: !currentlyBlocked }),
+            });
+            haptic("success");
+            renderProviderClients();
+          } catch (e) { showToast("Не получилось"); }
+        });
+      };
+    });
   }
 
   async function renderProviderProfile() {
@@ -1168,7 +1191,9 @@
             showToast("Готово, сообщим при первом освобождении!");
           }
           loadStaffSchedule();
-        } catch (e) { showToast("Не получилось, попробуй ещё раз"); }
+        } catch (e) {
+          showToast(e.message === "blocked" ? "К сожалению, запись к этому специалисту сейчас недоступна" : "Не получилось, попробуй ещё раз");
+        }
       };
       return;
     }
@@ -1250,6 +1275,7 @@
           promo_exhausted: "У промокода закончился лимит",
           promo_used: "Ты уже использовал(а) этот промокод",
           slot_conflict: "На это время накладывается другая запись — выбери другое время",
+          blocked: "К сожалению, запись к этому специалисту сейчас недоступна",
         };
         const errCode = (e && e.message) || "";
         showToast(messages[errCode] || (e.status === 409 ? "Увы, время уже заняли" : "Не получилось записаться"));

@@ -174,6 +174,7 @@ def init_db():
         _ensure_column(conn, "slots", "service_name", "TEXT")
         _ensure_column(conn, "slots", "staff_id", "INTEGER")
         _ensure_column(conn, "slots", "staff_name", "TEXT")
+        _ensure_column(conn, "clients", "blocked", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "trainers", "price", "INTEGER")
         _ensure_column(conn, "trainers", "duration_min", "INTEGER")
         _ensure_column(conn, "trainers", "category", "TEXT")
@@ -603,6 +604,23 @@ def list_clients(trainer_id: int):
         return conn.execute(
             "SELECT * FROM clients WHERE trainer_id=? ORDER BY created_at DESC", (trainer_id,)
         ).fetchall()
+
+
+def set_client_blocked(trainer_id: int, client_id: int, blocked: bool) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE clients SET blocked=? WHERE id=? AND trainer_id=?",
+            (1 if blocked else 0, client_id, trainer_id),
+        )
+        return cur.rowcount > 0
+
+
+def is_client_blocked(trainer_id: int, client_id: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT blocked FROM clients WHERE id=? AND trainer_id=?", (client_id, trainer_id)
+        ).fetchone()
+    return bool(row["blocked"]) if row else False
 
 
 def count_clients(trainer_id: int) -> int:

@@ -599,10 +599,25 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         clients = db.list_clients(user["id"])
         return web.json_response({
             "clients": [
-                {"id": c["id"], "name": c["name"], "username": c["username"]}
+                {"id": c["id"], "name": c["name"], "username": c["username"], "blocked": bool(c["blocked"])}
                 for c in clients
             ],
         })
+
+    @require_auth
+    async def handle_client_block(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        try:
+            client_id = int(body.get("client_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad client_id"}, status=400)
+        blocked = bool(body.get("blocked"))
+        ok = db.set_client_blocked(user["id"], client_id, blocked)
+        if not ok:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"ok": True})
 
     @require_auth
     async def handle_provider_stats(request: web.Request, user: dict) -> web.Response:
@@ -724,6 +739,8 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         trainer = db.get_trainer(trainer_id) if trainer_id else None
         if not trainer:
             return web.json_response({"error": "no trainer"}, status=404)
+        if db.is_client_blocked(trainer_id, user["id"]):
+            return web.json_response({"error": "blocked"}, status=403)
         body = await request.json()
         try:
             staff_id = int(body.get("staff_id"))
@@ -768,6 +785,8 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         slot_pre = db.get_slot(slot_id)
         if not slot_pre:
             return web.json_response({"error": "not found"}, status=404)
+        if db.is_client_blocked(slot_pre["trainer_id"], user["id"]):
+            return web.json_response({"error": "blocked"}, status=403)
 
         promo = None
         promo_code_input = (body.get("promo_code") or "").strip()
@@ -971,6 +990,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/schedule/close_range", handle_schedule_close_range)
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
+    app.router.add_post("/api/provider/clients/block", handle_client_block)
     app.router.add_get("/api/provider/stats", handle_provider_stats)
     app.router.add_get("/api/provider/reviews", handle_provider_reviews)
     app.router.add_get("/api/provider/promos", handle_promos_list)
