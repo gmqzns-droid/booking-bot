@@ -221,6 +221,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                     "is_business": bool(trainer["is_business"]),
                     "terms": terminology.terms_for(trainer["category_key"]),
                     "link": f"https://t.me/{bot_username}?start={trainer['id']}",
+                    "staff": [staff_to_dict(s) for s in db.list_staff(trainer["id"])],
                 },
             })
         client_trainer_id = db.get_client_trainer(uid)

@@ -245,6 +245,8 @@
   async function renderProviderSchedule() {
     setHeader("Расписание", PROVIDER.name);
     const content = el("content");
+    hideFab();
+    PROVIDER.staff = PROVIDER.staff || [];
 
     if (!CURRENT_STAFF_ID || !PROVIDER.staff.some((s) => String(s.id) === String(CURRENT_STAFF_ID))) {
       CURRENT_STAFF_ID = PROVIDER.staff.length ? PROVIDER.staff[0].id : null;
@@ -451,6 +453,7 @@
 
   async function renderProviderServices() {
     setHeader("Услуги", PROVIDER.name);
+    hideFab();
     const content = el("content");
     content.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
     let data;
@@ -543,6 +546,7 @@
 
   async function renderProviderStaff() {
     setHeader("Сотрудники", PROVIDER.name);
+    hideFab();
     const content = el("content");
     content.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
     let data;
