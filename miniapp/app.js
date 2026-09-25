@@ -8,9 +8,11 @@
   const MONTHS_RU = ["", "янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 
   let ROLE = null;         // "provider" | "client" | "guest"
-  let PROVIDER = null;     // {id, name, category, terms, link} — если роль provider
+  let PROVIDER = null;     // {id, name, category, terms, link, is_business, staff} — если роль provider
   let CLIENT_HOME = null;  // ответ /api/client/home — если роль client
   let TAB = null;
+  let CURRENT_STAFF_ID = null; // выбранный сотрудник (вкладка «Расписание» у провайдера-бизнеса)
+  let OB_MODE = "solo";        // выбранный режим на онбординге: "solo" | "business"
 
   // ---------- утилиты ----------
 
@@ -156,12 +158,32 @@
     startApp("client");
   }
 
+  const OB_HINTS = {
+    solo: "Один специалист — просто ты и твоё расписание.",
+    business: "Заведи разных мастеров/сотрудников — клиент сам выберет, к кому записаться.",
+  };
+  const OB_NAME_LABELS = {
+    solo: "Как тебя подписывать клиентам?",
+    business: "Название компании/салона",
+  };
+
+  Array.from(el("ob-mode-chips").children).forEach((c) => c.onclick = () => {
+    Array.from(el("ob-mode-chips").children).forEach((x) => x.classList.remove("active"));
+    c.classList.add("active");
+    OB_MODE = c.dataset.mode;
+    el("ob-mode-hint").textContent = OB_HINTS[OB_MODE];
+    el("ob-name-label").textContent = OB_NAME_LABELS[OB_MODE];
+  });
+
   el("ob-submit").onclick = async () => {
     const name = el("ob-name").value.trim();
     const category = el("ob-category").value.trim();
     if (!name) { showToast("Укажи имя"); return; }
     try {
-      await api("/api/provider/register", { method: "POST", body: JSON.stringify({ name, category }) });
+      await api("/api/provider/register", {
+        method: "POST",
+        body: JSON.stringify({ name, category, is_business: OB_MODE === "business" }),
+      });
     } catch (e) {
       showToast("Не получилось сохранить, попробуй ещё раз");
       return;
@@ -179,6 +201,7 @@
       ? [
           { id: "schedule", icon: "🗓", label: "Расписание" },
           { id: "services", icon: "💼", label: "Услуги" },
+          ...(PROVIDER.is_business ? [{ id: "staff", icon: "🧑‍🤝‍🧑", label: "Сотрудники" }] : []),
           { id: "clients", icon: "👥", label: "Клиенты" },
           { id: "profile", icon: "⚙️", label: "Профиль" },
         ]
@@ -203,6 +226,7 @@
     if (ROLE === "provider") {
       if (tab === "schedule") renderProviderSchedule();
       if (tab === "services") renderProviderServices();
+      if (tab === "staff") renderProviderStaff();
       if (tab === "clients") renderProviderClients();
       if (tab === "profile") renderProviderProfile();
     } else {
@@ -221,12 +245,31 @@
   async function renderProviderSchedule() {
     setHeader("Расписание", PROVIDER.name);
     const content = el("content");
-    content.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
+
+    if (!CURRENT_STAFF_ID || !PROVIDER.staff.some((s) => String(s.id) === String(CURRENT_STAFF_ID))) {
+      CURRENT_STAFF_ID = PROVIDER.staff.length ? PROVIDER.staff[0].id : null;
+    }
+    if (!CURRENT_STAFF_ID) {
+      content.innerHTML = '<div class="empty-state"><div class="empty-text">Нет ни одного сотрудника</div></div>';
+      hideFab();
+      return;
+    }
+
+    let pickerHtml = "";
+    if (PROVIDER.is_business && PROVIDER.staff.length > 1) {
+      pickerHtml = `<div class="section-label">Сотрудник</div><div class="chips" id="staff-picker-chips">` +
+        PROVIDER.staff.map((s) =>
+          `<button class="chip${String(s.id) === String(CURRENT_STAFF_ID) ? " active" : ""}" data-staff="${s.id}">${escapeHtml(s.name)}</button>`
+        ).join("") + "</div>";
+    }
+
+    content.innerHTML = pickerHtml + '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
+
     let data;
     try {
-      data = await api("/api/provider/schedule", { method: "GET" });
+      data = await api(`/api/provider/schedule?staff_id=${encodeURIComponent(CURRENT_STAFF_ID)}`, { method: "GET" });
     } catch (e) {
-      content.innerHTML = '<div class="empty-state"><div class="empty-text">Не удалось загрузить расписание</div></div>';
+      content.innerHTML = pickerHtml + '<div class="empty-state"><div class="empty-text">Не удалось загрузить расписание</div></div>';
       return;
     }
 
@@ -236,7 +279,7 @@
     });
     const dates = Object.keys(byDate).sort();
 
-    let html = "";
+    let html = pickerHtml;
 
     if (data.recent_past && data.recent_past.length) {
       html += '<div class="section-label">Отметить неявку</div><div class="card">';
@@ -273,6 +316,13 @@
     }
 
     content.innerHTML = html;
+
+    if (el("staff-picker-chips")) {
+      Array.from(el("staff-picker-chips").children).forEach((c) => c.onclick = () => {
+        CURRENT_STAFF_ID = c.dataset.staff;
+        renderProviderSchedule();
+      });
+    }
 
     content.querySelectorAll("[data-noshow]").forEach((btn) => {
       btn.onclick = () => {
@@ -379,7 +429,7 @@
           const time = el("slot-time").value;
           if (!date || !time) { showToast("Заполни дату и время"); return; }
           await api("/api/provider/slots/add", {
-            method: "POST", body: JSON.stringify({ slot_dt: `${date} ${time}` }),
+            method: "POST", body: JSON.stringify({ slot_dt: `${date} ${time}`, staff_id: CURRENT_STAFF_ID }),
           });
         } else {
           const weekdays = wdChips.filter((c) => c.classList.contains("active")).map((c) => Number(c.dataset.wd));
@@ -387,7 +437,7 @@
           const time = el("recur-time").value;
           const [hh, mm] = time.split(":").map(Number);
           await api("/api/provider/slots/add_recurring", {
-            method: "POST", body: JSON.stringify({ weekdays, hh, mm }),
+            method: "POST", body: JSON.stringify({ weekdays, hh, mm, staff_id: CURRENT_STAFF_ID }),
           });
         }
         closeSheet();
@@ -491,6 +541,84 @@
     }
   }
 
+  async function renderProviderStaff() {
+    setHeader("Сотрудники", PROVIDER.name);
+    const content = el("content");
+    content.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
+    let data;
+    try {
+      data = await api("/api/provider/staff", { method: "GET" });
+    } catch (e) {
+      content.innerHTML = '<div class="empty-state"><div class="empty-text">Не удалось загрузить сотрудников</div></div>';
+      return;
+    }
+    PROVIDER.staff = data.staff;
+    if (!data.staff.length) {
+      content.innerHTML = '<div class="empty-state"><div class="empty-emoji">🧑‍🤝‍🧑</div><div class="empty-title">Пока нет сотрудников</div>' +
+        '<div class="empty-text">Добавь первого сотрудника кнопкой снизу справа.</div></div>';
+    } else {
+      let html = '<div class="card">';
+      data.staff.forEach((s) => {
+        html += `<div class="list-item" data-staff="${s.id}">
+          <div class="list-item-main">
+            <div class="list-item-title">${escapeHtml(s.name)}</div>
+          </div>
+          <span class="badge">Изменить</span>
+        </div>`;
+      });
+      html += "</div>";
+      content.innerHTML = html;
+      content.querySelectorAll("[data-staff]").forEach((row) => {
+        const staff = data.staff.find((s) => String(s.id) === row.dataset.staff);
+        row.onclick = () => openStaffSheet(staff);
+      });
+    }
+    renderFab(() => openStaffSheet(null));
+  }
+
+  function openStaffSheet(staff) {
+    const isEdit = !!staff;
+    openSheet(`
+      <div class="sheet-title">${isEdit ? "Изменить сотрудника" : "Новый сотрудник"}</div>
+      <div class="field">
+        <label class="field-label">Имя</label>
+        <input class="input" id="staff-name" type="text" maxlength="80" value="${isEdit ? escapeHtml(staff.name) : ""}" placeholder="Например: Мария" />
+      </div>
+      <button class="btn btn-primary btn-block" id="staff-submit" style="margin-bottom:10px">Сохранить</button>
+      ${isEdit ? '<button class="btn btn-danger btn-block" id="staff-delete">Удалить сотрудника</button>' : ""}
+    `);
+
+    el("staff-submit").onclick = async () => {
+      const name = el("staff-name").value.trim();
+      if (!name) { showToast("Укажи имя"); return; }
+      try {
+        if (isEdit) {
+          await api("/api/provider/staff/update", { method: "POST", body: JSON.stringify({ id: staff.id, name }) });
+        } else {
+          await api("/api/provider/staff/add", { method: "POST", body: JSON.stringify({ name }) });
+        }
+        closeSheet();
+        haptic("success");
+        renderProviderStaff();
+      } catch (e) { showToast("Не получилось сохранить"); }
+    };
+
+    if (isEdit) {
+      el("staff-delete").onclick = () => {
+        showConfirm("Удалить сотрудника?", async () => {
+          try {
+            await api("/api/provider/staff/delete", { method: "POST", body: JSON.stringify({ id: staff.id }) });
+            closeSheet();
+            if (String(CURRENT_STAFF_ID) === String(staff.id)) CURRENT_STAFF_ID = null;
+            renderProviderStaff();
+          } catch (e) {
+            showToast(e.status === 409 ? "Нельзя удалить последнего сотрудника" : "Не получилось удалить");
+          }
+        });
+      };
+    }
+  }
+
   async function renderProviderClients() {
     setHeader("Клиенты", PROVIDER.name);
     hideFab();
@@ -573,7 +701,9 @@
   // ================= КЛИЕНТ =================
 
   let selectedServiceId = null;
+  let selectedStaffId = null;
   let selectedDate = null;
+  let STAFF_DAYS = [];
 
   function renderClientBook() {
     const terms = CLIENT_HOME.terms;
@@ -591,21 +721,26 @@
       selectedServiceId = CLIENT_HOME.services[0].id;
     }
 
-    if (!CLIENT_HOME.days.length) {
-      html += `<div class="empty-state"><div class="empty-emoji">🗓</div><div class="empty-title">Свободного времени пока нет</div>` +
+    const staffList = CLIENT_HOME.staff || [];
+    if (!staffList.length) {
+      html += `<div class="empty-state"><div class="empty-emoji">🗓</div><div class="empty-title">Пока нет доступных мастеров</div>` +
         `<div class="empty-text">Загляни чуть позже.</div></div>`;
       content.innerHTML = html;
       return;
     }
 
-    html += `<div class="section-label">Дата</div><div class="chips" id="day-chips">`;
-    CLIENT_HOME.days.forEach((d, i) => {
-      html += `<button class="chip${i === 0 ? " active" : ""}" data-date="${d.date}">${escapeHtml(fmtDay(d.date))}</button>`;
-    });
-    html += `</div><div class="section-label">Время</div><div class="slot-grid" id="slot-grid"></div>`;
+    if (CLIENT_HOME.is_business && staffList.length > 1) {
+      html += `<div class="section-label">Мастер</div><div class="chips" id="staff-chips">`;
+      staffList.forEach((s, i) => {
+        html += `<button class="chip${i === 0 ? " active" : ""}" data-staff="${s.id}">${escapeHtml(s.name)}</button>`;
+      });
+      html += "</div>";
+    }
+
+    html += `<div id="schedule-area"></div>`;
 
     content.innerHTML = html;
-    selectedDate = CLIENT_HOME.days[0].date;
+    selectedStaffId = staffList[0].id;
 
     if (el("service-chips")) {
       Array.from(el("service-chips").children).forEach((c) => c.onclick = () => {
@@ -614,6 +749,40 @@
         selectedServiceId = c.dataset.svc;
       });
     }
+
+    if (el("staff-chips")) {
+      Array.from(el("staff-chips").children).forEach((c) => c.onclick = () => {
+        Array.from(el("staff-chips").children).forEach((x) => x.classList.remove("active"));
+        c.classList.add("active");
+        selectedStaffId = c.dataset.staff;
+        loadStaffSchedule();
+      });
+    }
+
+    loadStaffSchedule();
+  }
+
+  async function loadStaffSchedule() {
+    const area = el("schedule-area");
+    if (!area) return;
+    area.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
+    let data;
+    try {
+      data = await api(`/api/client/staff_schedule?staff_id=${encodeURIComponent(selectedStaffId)}`, { method: "GET" });
+    } catch (e) {
+      area.innerHTML = '<div class="empty-state"><div class="empty-text">Не удалось загрузить расписание</div></div>';
+      return;
+    }
+    STAFF_DAYS = data.days || [];
+    if (!STAFF_DAYS.length) {
+      area.innerHTML = `<div class="empty-state"><div class="empty-emoji">🗓</div><div class="empty-title">Свободного времени пока нет</div>` +
+        `<div class="empty-text">Загляни чуть позже.</div></div>`;
+      return;
+    }
+    selectedDate = STAFF_DAYS[0].date;
+    area.innerHTML = `<div class="section-label">Дата</div><div class="chips" id="day-chips">` +
+      STAFF_DAYS.map((d, i) => `<button class="chip${i === 0 ? " active" : ""}" data-date="${d.date}">${escapeHtml(fmtDay(d.date))}</button>`).join("") +
+      `</div><div class="section-label">Время</div><div class="slot-grid" id="slot-grid"></div>`;
 
     Array.from(el("day-chips").children).forEach((c) => c.onclick = () => {
       Array.from(el("day-chips").children).forEach((x) => x.classList.remove("active"));
@@ -627,7 +796,7 @@
 
   function renderSlotGrid() {
     const grid = el("slot-grid");
-    const day = CLIENT_HOME.days.find((d) => d.date === selectedDate);
+    const day = STAFF_DAYS.find((d) => d.date === selectedDate);
     grid.innerHTML = "";
     if (!day) return;
     day.slots.forEach((s) => {
@@ -681,10 +850,13 @@
     }
     let html = '<div class="card">';
     data.bookings.forEach((b) => {
+      const whoLine = (b.staff_name && b.staff_name !== b.trainer_name)
+        ? `${escapeHtml(b.staff_name)} (${escapeHtml(b.trainer_name)})`
+        : escapeHtml(b.trainer_name);
       html += `<div class="list-item" data-booking="${b.id}">
         <div class="list-item-main">
           <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
-          <div class="list-item-sub">${escapeHtml(b.trainer_name)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}</div>
+          <div class="list-item-sub">${whoLine}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}</div>
         </div>
         <span class="badge badge-warn">Отменить</span>
       </div>`;

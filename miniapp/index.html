@@ -42,13 +42,21 @@
     <div class="content">
       <div class="card">
         <div class="field">
-          <label class="field-label">Как тебя подписывать клиентам?</label>
+          <label class="field-label">Как работаешь?</label>
+          <div class="chips" id="ob-mode-chips">
+            <button class="chip active" data-mode="solo">Я один(а)</button>
+            <button class="chip" data-mode="business">У меня команда/салон</button>
+          </div>
+          <div class="field-hint" id="ob-mode-hint">Один специалист — просто ты и твоё расписание.</div>
+        </div>
+        <div class="field">
+          <label class="field-label" id="ob-name-label">Как тебя подписывать клиентам?</label>
           <input id="ob-name" class="input" type="text" placeholder="Имя" maxlength="80" />
         </div>
         <div class="field">
-          <label class="field-label">Чем занимаешься?</label>
+          <label class="field-label">Чем занимаетесь?</label>
           <input id="ob-category" class="input" type="text" placeholder="например: маникюр, персональные тренировки, репетитор по химии" maxlength="120" />
-          <div class="field-hint">Мы подстроим формулировки в приложении под твою сферу.</div>
+          <div class="field-hint">Мы подстроим формулировки в приложении под вашу сферу.</div>
         </div>
         <button class="btn btn-primary btn-block" id="ob-submit">Готово</button>
       </div>

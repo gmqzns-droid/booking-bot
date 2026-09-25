@@ -59,9 +59,6 @@ def init_db():
             """
         )
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_slot ON slots(trainer_id, slot_dt)"
-        )
-        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS clients (
                 id INTEGER PRIMARY KEY,          -- telegram user id клиента
@@ -86,15 +83,38 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS staff (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_id INTEGER NOT NULL,   -- = trainers.id владельца
+                name TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         # Миграции для более старых баз (например, на Railway после обновления кода)
         _ensure_column(conn, "slots", "client_username", "TEXT")
         _ensure_column(conn, "slots", "no_show", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "slots", "service_id", "INTEGER")
         _ensure_column(conn, "slots", "service_name", "TEXT")
+        _ensure_column(conn, "slots", "staff_id", "INTEGER")
+        _ensure_column(conn, "slots", "staff_name", "TEXT")
         _ensure_column(conn, "trainers", "price", "INTEGER")
         _ensure_column(conn, "trainers", "duration_min", "INTEGER")
         _ensure_column(conn, "trainers", "category", "TEXT")
         _ensure_column(conn, "trainers", "category_key", "TEXT")
+        _ensure_column(conn, "trainers", "is_business", "INTEGER NOT NULL DEFAULT 0")
+        # У слотов, заведённых до появления сотрудников, уникальный индекс был на
+        # (trainer_id, slot_dt) — теперь то же самое время может быть свободно у РАЗНЫХ
+        # сотрудников одного бизнеса, поэтому индекс должен учитывать staff_id.
+        conn.execute("DROP INDEX IF EXISTS idx_trainer_slot")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_staff_slot "
+            "ON slots(trainer_id, staff_id, slot_dt)"
+        )
 
 
 # ---------- Тренеры ----------
@@ -136,6 +156,64 @@ def set_trainer_category(trainer_id: int, category: str, category_key: str):
             "UPDATE trainers SET category=?, category_key=? WHERE id=?",
             (category, category_key, trainer_id),
         )
+
+
+def set_trainer_is_business(trainer_id: int, is_business: bool):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE trainers SET is_business=? WHERE id=?", (1 if is_business else 0, trainer_id)
+        )
+
+
+# ---------- Сотрудники (актуально для бизнес-аккаунтов; у соло-специалиста
+# всегда ровно одна запись здесь, заведённая автоматически при регистрации) ----------
+
+def add_staff(business_id: int, name: str) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM staff WHERE business_id=?",
+            (business_id,),
+        )
+        pos = cur.fetchone()["pos"]
+        cur = conn.execute(
+            "INSERT INTO staff (business_id, name, active, position, created_at) "
+            "VALUES (?, ?, 1, ?, ?)",
+            (business_id, name, pos, now_msk().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def list_staff(business_id: int, active_only: bool = True):
+    with get_conn() as conn:
+        q = "SELECT * FROM staff WHERE business_id=?"
+        if active_only:
+            q += " AND active=1"
+        q += " ORDER BY position, id"
+        return conn.execute(q, (business_id,)).fetchall()
+
+
+def get_staff(staff_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM staff WHERE id=?", (staff_id,)).fetchone()
+
+
+def update_staff(staff_id: int, name: str | None = None):
+    with get_conn() as conn:
+        if name is not None:
+            conn.execute("UPDATE staff SET name=? WHERE id=?", (name, staff_id))
+
+
+def delete_staff(staff_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE staff SET active=0 WHERE id=?", (staff_id,))
+
+
+def count_staff(business_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM staff WHERE business_id=? AND active=1", (business_id,)
+        ).fetchone()
+    return row["c"] if row else 0
 
 
 # ---------- Услуги ----------
@@ -257,45 +335,47 @@ def count_clients(trainer_id: int) -> int:
 
 # ---------- Слоты ----------
 
-def add_slot(trainer_id: int, slot_dt: str) -> bool:
+def add_slot(trainer_id: int, staff_id: int, staff_name: str, slot_dt: str) -> bool:
     try:
         with get_conn() as conn:
             conn.execute(
-                "INSERT INTO slots (trainer_id, slot_dt, status, created_at) VALUES (?, ?, 'free', ?)",
-                (trainer_id, slot_dt, now_msk().isoformat()),
+                "INSERT INTO slots (trainer_id, staff_id, staff_name, slot_dt, status, created_at) "
+                "VALUES (?, ?, ?, ?, 'free', ?)",
+                (trainer_id, staff_id, staff_name, slot_dt, now_msk().isoformat()),
             )
         return True
     except sqlite3.IntegrityError:
         return False
 
 
-def list_free_days(trainer_id: int, limit_days: int = 14):
-    """Дни (YYYY-MM-DD), на которые у тренера есть свободные слоты."""
+def list_free_days(trainer_id: int, staff_id: int, limit_days: int = 14):
+    """Дни (YYYY-MM-DD), на которые у конкретного сотрудника есть свободные слоты."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT DISTINCT substr(slot_dt, 1, 10) AS day FROM slots "
-            "WHERE trainer_id=? AND status='free' AND slot_dt >= ? ORDER BY day LIMIT ?",
-            (trainer_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit_days),
+            "WHERE trainer_id=? AND staff_id=? AND status='free' AND slot_dt >= ? "
+            "ORDER BY day LIMIT ?",
+            (trainer_id, staff_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit_days),
         ).fetchall()
     return [r["day"] for r in rows]
 
 
-def list_free_slots_for_day(trainer_id: int, day: str):
+def list_free_slots_for_day(trainer_id: int, staff_id: int, day: str):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM slots WHERE trainer_id=? AND status='free' "
+            "SELECT * FROM slots WHERE trainer_id=? AND staff_id=? AND status='free' "
             "AND substr(slot_dt,1,10)=? AND slot_dt >= ? ORDER BY slot_dt",
-            (trainer_id, day, now_msk().strftime("%Y-%m-%d %H:%M")),
+            (trainer_id, staff_id, day, now_msk().strftime("%Y-%m-%d %H:%M")),
         ).fetchall()
     return rows
 
 
-def list_all_upcoming(trainer_id: int, limit: int = 50):
+def list_all_upcoming(trainer_id: int, staff_id: int, limit: int = 50):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM slots WHERE trainer_id=? AND status != 'cancelled' AND slot_dt >= ? "
-            "ORDER BY slot_dt LIMIT ?",
-            (trainer_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit),
+            "SELECT * FROM slots WHERE trainer_id=? AND staff_id=? AND status != 'cancelled' "
+            "AND slot_dt >= ? ORDER BY slot_dt LIMIT ?",
+            (trainer_id, staff_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit),
         ).fetchall()
     return rows
 
@@ -338,17 +418,17 @@ def free_up_slot(slot_id: int) -> bool:
         return cur.rowcount > 0
 
 
-def list_recent_past_bookings(trainer_id: int, hours: int = 48):
-    """Недавно прошедшие занятые слоты (за последние `hours` часов), ещё не отмеченные неявкой —
-    чтобы тренер мог отметить, что клиент не пришёл."""
+def list_recent_past_bookings(trainer_id: int, staff_id: int, hours: int = 48):
+    """Недавно прошедшие занятые слоты конкретного сотрудника (за последние `hours` часов),
+    ещё не отмеченные неявкой — чтобы можно было отметить, что клиент не пришёл."""
     with get_conn() as conn:
         now = now_msk()
         window_start = (now - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
         window_end = now.strftime("%Y-%m-%d %H:%M")
         rows = conn.execute(
-            "SELECT * FROM slots WHERE trainer_id=? AND status='booked' AND no_show=0 "
+            "SELECT * FROM slots WHERE trainer_id=? AND staff_id=? AND status='booked' AND no_show=0 "
             "AND slot_dt >= ? AND slot_dt < ? ORDER BY slot_dt DESC",
-            (trainer_id, window_start, window_end),
+            (trainer_id, staff_id, window_start, window_end),
         ).fetchall()
     return rows
 

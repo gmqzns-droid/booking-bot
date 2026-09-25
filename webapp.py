@@ -101,6 +101,7 @@ def slot_to_dict(row) -> dict:
         "status": row["status"],
         "client_name": row["client_name"] if "client_name" in row.keys() else None,
         "service_name": row["service_name"] if "service_name" in row.keys() else None,
+        "staff_name": row["staff_name"] if "staff_name" in row.keys() else None,
         "no_show": bool(row["no_show"]) if "no_show" in row.keys() else False,
     }
 
@@ -114,14 +115,20 @@ def service_to_dict(row) -> dict:
     }
 
 
+def staff_to_dict(row) -> dict:
+    return {"id": row["id"], "name": row["name"]}
+
+
 def trainer_public_dict(trainer) -> dict:
     terms = terminology.terms_for(trainer["category_key"])
     return {
         "id": trainer["id"],
         "name": trainer["name"],
         "category": trainer["category"],
+        "is_business": bool(trainer["is_business"]) if "is_business" in trainer.keys() else False,
         "terms": terms,
         "services": [service_to_dict(s) for s in db.list_services(trainer["id"])],
+        "staff": [staff_to_dict(s) for s in db.list_staff(trainer["id"])],
     }
 
 
@@ -162,6 +169,7 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
                     "id": trainer["id"],
                     "name": trainer["name"],
                     "category": trainer["category"],
+                    "is_business": bool(trainer["is_business"]),
                     "terms": terminology.terms_for(trainer["category_key"]),
                     "link": f"https://t.me/{bot_username}?start={trainer['id']}",
                 },
@@ -176,11 +184,18 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         body = await request.json()
         name = (body.get("name") or "").strip()[:80]
         category = (body.get("category") or "").strip()[:120]
+        is_business = bool(body.get("is_business"))
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         db.register_trainer(user["id"], name, "")
         category_key = terminology.classify_category(category)
         db.set_trainer_category(user["id"], category, category_key)
+        db.set_trainer_is_business(user["id"], is_business)
+        if not is_business:
+            # Соло-специалист всегда представлен ровно одним "сотрудником" (собой) —
+            # так и расписание, и запись клиента работают по единой staff_id-модели,
+            # но без отдельного экрана выбора мастера в UI.
+            db.add_staff(user["id"], name)
         return web.json_response({"ok": True})
 
     @require_auth
@@ -246,14 +261,79 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         db.delete_service(service["id"])
         return web.json_response({"ok": True})
 
-    # ---------- расписание специалиста ----------
+    # ---------- сотрудники (только для бизнес-аккаунтов) ----------
+
+    @require_auth
+    async def handle_staff_list(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        staff = [staff_to_dict(s) for s in db.list_staff(user["id"])]
+        return web.json_response({"staff": staff})
+
+    @require_auth
+    async def handle_staff_add(request: web.Request, user: dict) -> web.Response:
+        trainer = db.get_trainer(user["id"])
+        if not trainer or not trainer["is_business"]:
+            return web.json_response({"error": "not a business"}, status=403)
+        body = await request.json()
+        name = (body.get("name") or "").strip()[:80]
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        sid = db.add_staff(user["id"], name)
+        return web.json_response({"ok": True, "id": sid})
+
+    @require_auth
+    async def handle_staff_update(request: web.Request, user: dict) -> web.Response:
+        trainer = db.get_trainer(user["id"])
+        if not trainer or not trainer["is_business"]:
+            return web.json_response({"error": "not a business"}, status=403)
+        body = await request.json()
+        staff = db.get_staff(int(body.get("id", 0)))
+        if not staff or staff["business_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        name = (body.get("name") or "").strip()[:80]
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        db.update_staff(staff["id"], name=name)
+        return web.json_response({"ok": True})
+
+    @require_auth
+    async def handle_staff_delete(request: web.Request, user: dict) -> web.Response:
+        trainer = db.get_trainer(user["id"])
+        if not trainer or not trainer["is_business"]:
+            return web.json_response({"error": "not a business"}, status=403)
+        body = await request.json()
+        staff = db.get_staff(int(body.get("id", 0)))
+        if not staff or staff["business_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        if db.count_staff(user["id"]) <= 1:
+            return web.json_response({"error": "last staff"}, status=409)
+        db.delete_staff(staff["id"])
+        return web.json_response({"ok": True})
+
+    # ---------- расписание специалиста (в разрезе конкретного сотрудника) ----------
+
+    def _staff_for_provider(user_id: int, raw_staff_id):
+        """Проверяет, что staff_id передан и принадлежит бизнесу текущего провайдера.
+        Возвращает staff-строку или None."""
+        try:
+            staff_id = int(raw_staff_id)
+        except (TypeError, ValueError):
+            return None
+        staff = db.get_staff(staff_id)
+        if not staff or staff["business_id"] != user_id:
+            return None
+        return staff
 
     @require_auth
     async def handle_provider_schedule(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
-        slots = db.list_all_upcoming(user["id"], limit=200)
-        recent_past = db.list_recent_past_bookings(user["id"])
+        staff = _staff_for_provider(user["id"], request.query.get("staff_id"))
+        if not staff:
+            return web.json_response({"error": "bad staff_id"}, status=400)
+        slots = db.list_all_upcoming(user["id"], staff["id"], limit=200)
+        recent_past = db.list_recent_past_bookings(user["id"], staff["id"])
         return web.json_response({
             "slots": [slot_to_dict(s) | {"date": s["slot_dt"][:10]} for s in slots],
             "recent_past": [
@@ -267,12 +347,15 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
+        staff = _staff_for_provider(user["id"], body.get("staff_id"))
+        if not staff:
+            return web.json_response({"error": "bad staff_id"}, status=400)
         slot_dt = (body.get("slot_dt") or "").strip()
         try:
             datetime.strptime(slot_dt, "%Y-%m-%d %H:%M")
         except ValueError:
             return web.json_response({"error": "bad slot_dt"}, status=400)
-        ok = db.add_slot(user["id"], slot_dt)
+        ok = db.add_slot(user["id"], staff["id"], staff["name"], slot_dt)
         if not ok:
             return web.json_response({"error": "already exists"}, status=409)
         return web.json_response({"ok": True})
@@ -282,6 +365,9 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
+        staff = _staff_for_provider(user["id"], body.get("staff_id"))
+        if not staff:
+            return web.json_response({"error": "bad staff_id"}, status=400)
         weekdays = body.get("weekdays") or []
         try:
             hh, mm = int(body.get("hh")), int(body.get("mm"))
@@ -299,7 +385,7 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
             for week in range(RECUR_WEEKS):
                 d = base + timedelta(weeks=week)
                 slot_dt = f"{d:%Y-%m-%d} {hh:02d}:{mm:02d}"
-                if db.add_slot(user["id"], slot_dt):
+                if db.add_slot(user["id"], staff["id"], staff["name"], slot_dt):
                     added += 1
                 else:
                     skipped += 1
@@ -358,16 +444,31 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         trainer = db.get_trainer(trainer_id) if trainer_id else None
         if not trainer:
             return web.json_response({"error": "no trainer"}, status=404)
+        # Дни/слоты сюда не включаем — они запрашиваются отдельно для конкретного
+        # сотрудника через /api/client/staff_schedule, после того как клиент его выберет
+        # (при одном сотруднике — соло-специалист — фронтенд выберет его сам, без показа выбора).
+        return web.json_response(trainer_public_dict(trainer))
+
+    @require_auth
+    async def handle_client_staff_schedule(request: web.Request, user: dict) -> web.Response:
+        trainer_id = db.get_client_trainer(user["id"])
+        trainer = db.get_trainer(trainer_id) if trainer_id else None
+        if not trainer:
+            return web.json_response({"error": "no trainer"}, status=404)
+        try:
+            staff_id = int(request.query.get("staff_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad staff_id"}, status=400)
+        staff = db.get_staff(staff_id)
+        if not staff or staff["business_id"] != trainer_id:
+            return web.json_response({"error": "not found"}, status=404)
 
         days = []
-        for day in db.list_free_days(trainer_id):
-            slots = db.list_free_slots_for_day(trainer_id, day)
+        for day in db.list_free_days(trainer_id, staff_id):
+            slots = db.list_free_slots_for_day(trainer_id, staff_id, day)
             if slots:
                 days.append({"date": day, "label": fmt_day(day), "slots": [slot_to_dict(s) for s in slots]})
-
-        result = trainer_public_dict(trainer)
-        result["days"] = days
-        return web.json_response(result)
+        return web.json_response({"days": days})
 
     @require_auth
     async def handle_client_book(request: web.Request, user: dict) -> web.Response:
@@ -394,22 +495,30 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         trainer = db.get_trainer(slot["trainer_id"])
         terms = terminology.terms_for(trainer["category_key"])
         service_line = f" — {esc(service['name'])}" if service else ""
+        staff_name = slot["staff_name"] if "staff_name" in slot.keys() and slot["staff_name"] else trainer["name"]
+        # В режиме компании уточняем и бизнес, и конкретного сотрудника; у соло-специалиста
+        # staff_name совпадает с его собственным именем, поэтому просто одно имя.
+        who_line = (
+            f"<b>{esc(staff_name)}</b> ({esc(trainer['name'])})"
+            if trainer["is_business"] else f"<b>{esc(staff_name)}</b>"
+        )
 
         try:
             await bot.send_message(
                 user["id"],
                 f"🎉 Готово! Записал(а) тебя {terms['specialist_to']} "
-                f"<b>{esc(trainer['name'])}</b> {terms['session_to']}{service_line} "
+                f"{who_line} {terms['session_to']}{service_line} "
                 f"на <b>{fmt_slot(slot['slot_dt'])}</b>.",
             )
         except Exception:
             logger.warning("Не удалось отправить подтверждение клиенту %s", user["id"])
 
         contact = f" (@{esc(username)})" if username else ""
+        staff_line = f" · к {esc(staff_name)}" if trainer["is_business"] else ""
         try:
             await bot.send_message(
                 slot["trainer_id"],
-                f"🔔 <b>Новая запись!</b>\n{esc(full_name)}{contact}{service_line} — "
+                f"🔔 <b>Новая запись!</b>\n{esc(full_name)}{contact}{service_line}{staff_line} — "
                 f"{fmt_slot(slot['slot_dt'])}",
             )
         except Exception:
@@ -449,6 +558,7 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
             {
                 "id": r["id"], "slot_dt": r["slot_dt"], "trainer_name": r["trainer_name"],
                 "service_name": r["service_name"] if "service_name" in r.keys() else None,
+                "staff_name": r["staff_name"] if "staff_name" in r.keys() else None,
             }
             for r in rows
         ]
@@ -480,6 +590,10 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
     app.router.add_post("/api/provider/services/add", handle_services_add)
     app.router.add_post("/api/provider/services/update", handle_services_update)
     app.router.add_post("/api/provider/services/delete", handle_services_delete)
+    app.router.add_get("/api/provider/staff", handle_staff_list)
+    app.router.add_post("/api/provider/staff/add", handle_staff_add)
+    app.router.add_post("/api/provider/staff/update", handle_staff_update)
+    app.router.add_post("/api/provider/staff/delete", handle_staff_delete)
     app.router.add_get("/api/provider/schedule", handle_provider_schedule)
     app.router.add_post("/api/provider/slots/add", handle_slot_add)
     app.router.add_post("/api/provider/slots/add_recurring", handle_slot_add_recurring)
@@ -487,6 +601,7 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
     app.router.add_get("/api/client/home", handle_client_home)
+    app.router.add_get("/api/client/staff_schedule", handle_client_staff_schedule)
     app.router.add_post("/api/client/book", handle_client_book)
     app.router.add_post("/api/client/cancel", handle_client_cancel)
     app.router.add_get("/api/client/my", handle_client_my)
