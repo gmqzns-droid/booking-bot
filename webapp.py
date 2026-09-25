@@ -120,6 +120,28 @@ def staff_to_dict(row) -> dict:
     return {"id": row["id"], "name": row["name"]}
 
 
+def promo_discount_label(promo) -> str:
+    if promo["discount_type"] == "free":
+        return "Бесплатно"
+    if promo["discount_type"] == "percent":
+        return f"-{promo['discount_value']}%"
+    if promo["discount_type"] == "fixed":
+        return f"-{promo['discount_value']}₽"
+    return promo["code"]
+
+
+def promo_to_dict(row) -> dict:
+    return {
+        "id": row["id"],
+        "code": row["code"],
+        "discount_type": row["discount_type"],
+        "discount_value": row["discount_value"],
+        "max_uses": row["max_uses"],
+        "used_count": row["used_count"],
+        "label": promo_discount_label(row),
+    }
+
+
 def trainer_public_dict(trainer) -> dict:
     terms = terminology.terms_for(trainer["category_key"])
     return {
@@ -487,6 +509,55 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         ]
         return web.json_response({"summary": summary, "reviews": reviews})
 
+    # ---------- промокоды ----------
+
+    @require_auth
+    async def handle_promos_list(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        promos = [promo_to_dict(p) for p in db.list_promos(user["id"])]
+        return web.json_response({"promos": promos})
+
+    @require_auth
+    async def handle_promos_add(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        code = (body.get("code") or "").strip().upper()[:20]
+        discount_type = body.get("discount_type")
+        if not code or discount_type not in ("percent", "fixed", "free"):
+            return web.json_response({"error": "bad input"}, status=400)
+        discount_value = None
+        if discount_type in ("percent", "fixed"):
+            try:
+                discount_value = int(body.get("discount_value"))
+            except (TypeError, ValueError):
+                return web.json_response({"error": "bad discount_value"}, status=400)
+            if discount_type == "percent" and not (1 <= discount_value <= 100):
+                return web.json_response({"error": "bad discount_value"}, status=400)
+            if discount_type == "fixed" and discount_value <= 0:
+                return web.json_response({"error": "bad discount_value"}, status=400)
+        max_uses = body.get("max_uses")
+        try:
+            max_uses = int(max_uses) if max_uses not in (None, "") else None
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad max_uses"}, status=400)
+        promo_id = db.add_promo(user["id"], code, discount_type, discount_value, max_uses)
+        if promo_id is None:
+            return web.json_response({"error": "code exists"}, status=409)
+        return web.json_response({"ok": True, "id": promo_id})
+
+    @require_auth
+    async def handle_promos_delete(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        promo = db.get_promo(int(body.get("id", 0)))
+        if not promo or promo["trainer_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        db.delete_promo(promo["id"])
+        return web.json_response({"ok": True})
+
     # ---------- клиентская сторона ----------
 
     @require_auth
@@ -569,6 +640,21 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         service_id = body.get("service_id")
         service = db.get_service(int(service_id)) if service_id else None
 
+        slot_pre = db.get_slot(slot_id)
+        if not slot_pre:
+            return web.json_response({"error": "not found"}, status=404)
+
+        promo = None
+        promo_code_input = (body.get("promo_code") or "").strip()
+        if promo_code_input:
+            promo = db.get_active_promo_by_code(slot_pre["trainer_id"], promo_code_input)
+            if not promo:
+                return web.json_response({"error": "promo_invalid"}, status=400)
+            if promo["max_uses"] is not None and promo["used_count"] >= promo["max_uses"]:
+                return web.json_response({"error": "promo_exhausted"}, status=409)
+            if db.has_client_used_promo(promo["id"], user["id"]):
+                return web.json_response({"error": "promo_used"}, status=409)
+
         full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Без имени"
         username = user.get("username")
 
@@ -580,12 +666,19 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not ok:
             return web.json_response({"error": "slot taken"}, status=409)
 
+        discount_label = None
+        if promo:
+            db.redeem_promo(promo["id"], user["id"], slot_id)
+            discount_label = promo_discount_label(promo)
+            db.set_slot_promo(slot_id, promo["code"], discount_label)
+
         slot = db.get_slot(slot_id)
         trainer = db.get_trainer(slot["trainer_id"])
         if "staff_id" in slot.keys() and slot["staff_id"]:
             db.leave_waitlist(slot["trainer_id"], slot["staff_id"], user["id"])
         terms = terminology.terms_for(trainer["category_key"])
         service_line = f" — {esc(service['name'])}" if service else ""
+        promo_line = f" 🏷 промокод «{esc(promo['code'])}» ({esc(discount_label)})" if promo else ""
         staff_name = slot["staff_name"] if "staff_name" in slot.keys() and slot["staff_name"] else trainer["name"]
         # В режиме компании уточняем и бизнес, и конкретного сотрудника; у соло-специалиста
         # staff_name совпадает с его собственным именем, поэтому просто одно имя.
@@ -599,7 +692,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                 user["id"],
                 f"🎉 Готово! Записал(а) тебя {terms['specialist_to']} "
                 f"{who_line} {terms['session_to']}{service_line} "
-                f"на <b>{fmt_slot(slot['slot_dt'])}</b>.",
+                f"на <b>{fmt_slot(slot['slot_dt'])}</b>.{promo_line}",
             )
         except Exception:
             logger.warning("Не удалось отправить подтверждение клиенту %s", user["id"])
@@ -610,7 +703,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             await bot.send_message(
                 slot["trainer_id"],
                 f"🔔 <b>Новая запись!</b>\n{esc(full_name)}{contact}{service_line}{staff_line} — "
-                f"{fmt_slot(slot['slot_dt'])}",
+                f"{fmt_slot(slot['slot_dt'])}{promo_line}",
             )
         except Exception:
             logger.warning("Не удалось уведомить специалиста")
@@ -652,6 +745,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             "service_name": r["service_name"] if "service_name" in r.keys() else None,
             "staff_id": r["staff_id"] if "staff_id" in r.keys() else None,
             "staff_name": r["staff_name"] if "staff_name" in r.keys() else None,
+            "discount_label": r["discount_label"] if "discount_label" in r.keys() else None,
         }
 
     @require_auth
@@ -697,6 +791,9 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
     app.router.add_get("/api/provider/reviews", handle_provider_reviews)
+    app.router.add_get("/api/provider/promos", handle_promos_list)
+    app.router.add_post("/api/provider/promos/add", handle_promos_add)
+    app.router.add_post("/api/provider/promos/delete", handle_promos_delete)
     app.router.add_get("/api/client/home", handle_client_home)
     app.router.add_get("/api/client/staff_schedule", handle_client_staff_schedule)
     app.router.add_post("/api/client/waitlist/join", handle_waitlist_join)

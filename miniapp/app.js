@@ -681,6 +681,10 @@
           ? "Добавляй сотрудников во вкладке «Сотрудники» — клиент сам выбирает мастера."
           : "Один специалист. Переключись на «Команда/салон», если нужно добавить других мастеров."}</p>
       </div>
+      <div class="card" id="pf-promos-card">
+        <div class="card-title">Промокоды</div>
+        <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
+      </div>
       <div class="card" id="pf-reviews-card">
         <div class="card-title">Отзывы</div>
         <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
@@ -710,6 +714,8 @@
         showToast("Ссылка скопирована");
       }
     };
+
+    renderPromosCard();
 
     (async () => {
       const card = el("pf-reviews-card");
@@ -761,6 +767,107 @@
     });
   }
 
+  async function renderPromosCard() {
+    const card = el("pf-promos-card");
+    if (!card) return;
+    let data;
+    try {
+      data = await api("/api/provider/promos", { method: "GET" });
+    } catch (e) {
+      card.innerHTML = '<div class="card-title">Промокоды</div><p class="muted">Не удалось загрузить</p>';
+      return;
+    }
+    let html = '<div class="card-title">Промокоды</div>';
+    if (!data.promos.length) {
+      html += '<p class="muted" style="margin-bottom:12px">Пока нет ни одного кода.</p>';
+    } else {
+      data.promos.forEach((p) => {
+        const usesLine = p.max_uses ? `${p.used_count}/${p.max_uses} исп.` : `${p.used_count} исп.`;
+        html += `<div class="list-item" data-promo="${p.id}">
+          <div class="list-item-main">
+            <div class="list-item-title">${escapeHtml(p.code)} · ${escapeHtml(p.label)}</div>
+            <div class="list-item-sub">${usesLine}</div>
+          </div>
+          <span class="badge badge-warn">Удалить</span>
+        </div>`;
+      });
+    }
+    html += '<button class="btn btn-secondary btn-block" id="promo-add-btn" style="margin-top:6px">+ Новый промокод</button>';
+    card.innerHTML = html;
+
+    card.querySelectorAll("[data-promo]").forEach((row) => {
+      row.onclick = () => {
+        const id = row.dataset.promo;
+        showConfirm("Удалить промокод?", async () => {
+          try {
+            await api("/api/provider/promos/delete", { method: "POST", body: JSON.stringify({ id }) });
+            renderPromosCard();
+          } catch (e) { showToast("Не получилось удалить"); }
+        });
+      };
+    });
+    el("promo-add-btn").onclick = openPromoSheet;
+  }
+
+  function openPromoSheet() {
+    openSheet(`
+      <div class="sheet-title">Новый промокод</div>
+      <div class="field">
+        <label class="field-label">Код</label>
+        <input class="input" id="promo-code" type="text" maxlength="20" placeholder="Например: LETO2026" style="text-transform:uppercase" />
+      </div>
+      <div class="field">
+        <label class="field-label">Тип скидки</label>
+        <div class="chips" id="promo-type-chips">
+          <button class="chip active" data-type="percent">Процент</button>
+          <button class="chip" data-type="fixed">Фикс. сумма</button>
+          <button class="chip" data-type="free">Бесплатно</button>
+        </div>
+      </div>
+      <div class="field" id="promo-value-field">
+        <label class="field-label" id="promo-value-label">Размер скидки, %</label>
+        <input class="input" id="promo-value" type="number" min="1" placeholder="20" />
+      </div>
+      <div class="field">
+        <label class="field-label">Лимит использований</label>
+        <input class="input" id="promo-max-uses" type="number" min="1" placeholder="Без ограничения" />
+      </div>
+      <button class="btn btn-primary btn-block" id="promo-submit">Создать</button>
+    `);
+
+    const typeChips = Array.from(el("promo-type-chips").children);
+    const valueLabels = { percent: "Размер скидки, %", fixed: "Размер скидки, ₽", free: "" };
+    typeChips.forEach((c) => c.onclick = () => {
+      typeChips.forEach((x) => x.classList.remove("active"));
+      c.classList.add("active");
+      const type = c.dataset.type;
+      el("promo-value-field").hidden = type === "free";
+      el("promo-value-label").textContent = valueLabels[type];
+    });
+
+    el("promo-submit").onclick = async () => {
+      const code = el("promo-code").value.trim().toUpperCase();
+      const discount_type = typeChips.find((c) => c.classList.contains("active")).dataset.type;
+      if (!code) { showToast("Укажи код"); return; }
+      const payload = { code, discount_type };
+      if (discount_type !== "free") {
+        const val = el("promo-value").value.trim();
+        if (!val) { showToast("Укажи размер скидки"); return; }
+        payload.discount_value = Number(val);
+      }
+      const maxUses = el("promo-max-uses").value.trim();
+      if (maxUses) payload.max_uses = Number(maxUses);
+      try {
+        await api("/api/provider/promos/add", { method: "POST", body: JSON.stringify(payload) });
+        closeSheet();
+        haptic("success");
+        renderPromosCard();
+      } catch (e) {
+        showToast(e.status === 409 ? "Такой код уже есть" : "Не получилось создать");
+      }
+    };
+  }
+
   // ================= КЛИЕНТ =================
 
   let selectedServiceId = null;
@@ -769,6 +876,7 @@
   let STAFF_DAYS = [];
   let PRESET_STAFF_ID = null;   // выставляется кнопкой «Повторить» из истории записей
   let PRESET_SERVICE_ID = null;
+  let ENTERED_PROMO_CODE = null;
 
   function renderClientBook() {
     const terms = CLIENT_HOME.terms;
@@ -811,10 +919,17 @@
       html += "</div>";
     }
 
+    html += `<div class="field">
+      <label class="field-label">Промокод (если есть)</label>
+      <input class="input" id="promo-input" type="text" maxlength="20" placeholder="Необязательно" style="text-transform:uppercase" value="${escapeHtml(ENTERED_PROMO_CODE || "")}" />
+    </div>`;
+
     html += `<div id="schedule-area"></div>`;
 
     content.innerHTML = html;
     selectedStaffId = staffExists ? presetStaffId : staffList[0].id;
+
+    el("promo-input").oninput = (e) => { ENTERED_PROMO_CODE = e.target.value.trim().toUpperCase(); };
 
     if (el("service-chips")) {
       Array.from(el("service-chips").children).forEach((c) => c.onclick = () => {
@@ -910,15 +1025,25 @@
       try {
         await api("/api/client/book", {
           method: "POST",
-          body: JSON.stringify({ slot_id: slot.id, service_id: selectedServiceId || null }),
+          body: JSON.stringify({
+            slot_id: slot.id, service_id: selectedServiceId || null,
+            promo_code: ENTERED_PROMO_CODE || null,
+          }),
         });
         haptic("success");
-        showToast("🎉 Записал(а)!");
+        showToast(ENTERED_PROMO_CODE ? "🎉 Записал(а), промокод применён!" : "🎉 Записал(а)!");
+        ENTERED_PROMO_CODE = null;
         CLIENT_HOME = await api("/api/client/home", { method: "GET" });
         renderClientBook();
       } catch (e) {
         haptic("error");
-        showToast(e.status === 409 ? "Увы, время уже заняли" : "Не получилось записаться");
+        const messages = {
+          promo_invalid: "Такого промокода нет",
+          promo_exhausted: "У промокода закончился лимит",
+          promo_used: "Ты уже использовал(а) этот промокод",
+        };
+        const errCode = (e && e.message) || "";
+        showToast(messages[errCode] || (e.status === 409 ? "Увы, время уже заняли" : "Не получилось записаться"));
         CLIENT_HOME = await api("/api/client/home", { method: "GET" });
         renderClientBook();
       }
@@ -955,7 +1080,7 @@
         html += `<div class="list-item" data-booking="${b.id}">
           <div class="list-item-main">
             <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
-            <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}</div>
+            <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}${b.discount_label ? " · 🏷 " + escapeHtml(b.discount_label) : ""}</div>
           </div>
           <span class="badge badge-warn">Отменить</span>
         </div>`;

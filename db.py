@@ -132,6 +132,41 @@ def init_db():
             """
         )
         _ensure_column(conn, "slots", "review_requested", "INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promo_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trainer_id INTEGER NOT NULL,
+                code TEXT NOT NULL,
+                discount_type TEXT NOT NULL,   -- percent | fixed | free
+                discount_value INTEGER,        -- % (1-100) или рубли; NULL для free
+                max_uses INTEGER,              -- NULL = без ограничения
+                used_count INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_promo_trainer_code ON promo_codes(trainer_id, code)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS promo_redemptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                promo_id INTEGER NOT NULL,
+                client_id INTEGER NOT NULL,
+                slot_id INTEGER,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_promo_redeem_client "
+            "ON promo_redemptions(promo_id, client_id)"
+        )
+        _ensure_column(conn, "slots", "promo_code", "TEXT")
+        _ensure_column(conn, "slots", "discount_label", "TEXT")
         # Миграции для более старых баз (например, на Railway после обновления кода)
         _ensure_column(conn, "slots", "client_username", "TEXT")
         _ensure_column(conn, "slots", "no_show", "INTEGER NOT NULL DEFAULT 0")
@@ -375,6 +410,90 @@ def list_reviews_for_trainer(trainer_id: int, limit: int = 30):
             (trainer_id, limit),
         ).fetchall()
     return rows
+
+
+# ---------- Промокоды ----------
+# Бот не проводит платежи — специалист сам решает, как применить скидку на месте.
+# Промокод здесь про проверку и учёт использования, а не про расчёт денег.
+
+def add_promo(
+    trainer_id: int, code: str, discount_type: str,
+    discount_value: int | None, max_uses: int | None,
+) -> int | None:
+    """Возвращает id, либо None если у этого специалиста уже есть код с таким названием."""
+    code = (code or "").strip().upper()[:20]
+    with get_conn() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO promo_codes (trainer_id, code, discount_type, discount_value, "
+                "max_uses, used_count, active, created_at) VALUES (?,?,?,?,?,0,1,?)",
+                (trainer_id, code, discount_type, discount_value, max_uses, now_msk().isoformat()),
+            )
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+
+def list_promos(trainer_id: int, active_only: bool = False):
+    with get_conn() as conn:
+        q = "SELECT * FROM promo_codes WHERE trainer_id=?"
+        if active_only:
+            q += " AND active=1"
+        q += " ORDER BY id DESC"
+        return conn.execute(q, (trainer_id,)).fetchall()
+
+
+def get_promo(promo_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM promo_codes WHERE id=?", (promo_id,)).fetchone()
+
+
+def get_active_promo_by_code(trainer_id: int, code: str):
+    code = (code or "").strip().upper()
+    if not code:
+        return None
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM promo_codes WHERE trainer_id=? AND code=? AND active=1",
+            (trainer_id, code),
+        ).fetchone()
+
+
+def delete_promo(promo_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE promo_codes SET active=0 WHERE id=?", (promo_id,))
+
+
+def has_client_used_promo(promo_id: int, client_id: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM promo_redemptions WHERE promo_id=? AND client_id=?",
+            (promo_id, client_id),
+        ).fetchone()
+    return row is not None
+
+
+def set_slot_promo(slot_id: int, promo_code: str, discount_label: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE slots SET promo_code=?, discount_label=? WHERE id=?",
+            (promo_code, discount_label, slot_id),
+        )
+
+
+def redeem_promo(promo_id: int, client_id: int, slot_id: int) -> bool:
+    """False, если этот клиент уже использовал этот код раньше (гонка/повторный сабмит)."""
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO promo_redemptions (promo_id, client_id, slot_id, created_at) "
+                "VALUES (?,?,?,?)",
+                (promo_id, client_id, slot_id, now_msk().isoformat()),
+            )
+            conn.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE id=?", (promo_id,))
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
 # ---------- Услуги ----------
