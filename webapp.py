@@ -44,10 +44,7 @@ def validate_init_data(init_data: str, bot_token: str) -> dict | None:
     /данные протухли."""
     if not init_data:
         return None
-    try:
-        pairs = parse_qsl(init_data, strict_parsing=True)
-    except ValueError:
-        return None
+    pairs = parse_qsl(init_data, keep_blank_values=True)
     data = dict(pairs)
     received_hash = data.pop("hash", None)
     if not received_hash:
@@ -83,6 +80,11 @@ def create_app(bot, bot_token: str) -> web.Application:
         """Возвращает dict пользователя Telegram из initData или None, если подпись неверна."""
         parsed = validate_init_data(init_data, bot_token)
         if not parsed or not parsed.get("user"):
+            # Временный диагностический лог — почему не прошла проверка initData.
+            logger.warning(
+                "auth_user: проверка не прошла. len(init_data)=%s, начало=%r",
+                len(init_data or ""), (init_data or "")[:60],
+            )
             return None
         return parsed["user"]
 
