@@ -276,8 +276,10 @@
     }
 
     const byDate = {};
+    const slotsById = {};
     data.slots.forEach((s) => {
       (byDate[s.date] = byDate[s.date] || []).push(s);
+      slotsById[s.id] = s;
     });
     const dates = Object.keys(byDate).sort();
 
@@ -343,17 +345,79 @@
       row.onclick = () => {
         const id = row.dataset.slot;
         const booked = row.dataset.booked === "1";
-        showConfirm(booked ? "Отменить эту запись? Клиенту придёт уведомление." : "Удалить этот слот?", async () => {
-          try {
-            await api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: id }) });
-            haptic("success");
-            renderProviderSchedule();
-          } catch (e) { showToast("Не получилось"); }
-        });
+        if (booked) {
+          openBookedSlotActionsSheet(slotsById[id]);
+        } else {
+          showConfirm("Удалить этот слот?", async () => {
+            try {
+              await api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: id }) });
+              haptic("success");
+              renderProviderSchedule();
+            } catch (e) { showToast("Не получилось"); }
+          });
+        }
       };
     });
 
     renderFab(() => openAddSlotSheet());
+  }
+
+  function openBookedSlotActionsSheet(slot) {
+    if (!slot) return;
+    openSheet(`
+      <div class="sheet-title">${escapeHtml(fmtDay(slot.date))}, ${slot.time}</div>
+      <p class="muted" style="margin-top:-10px">${escapeHtml(slot.client_name || "")}${slot.service_name ? " · " + escapeHtml(slot.service_name) : ""}</p>
+      <button class="btn btn-secondary btn-block" id="act-reschedule" style="margin-bottom:8px">📅 Перенести</button>
+      <button class="btn btn-danger btn-block" id="act-cancel">Отменить запись</button>
+    `);
+    el("act-reschedule").onclick = () => {
+      closeSheet();
+      openRescheduleSheet(slot.id, `${fmtDay(slot.date)}, ${slot.time}`);
+    };
+    el("act-cancel").onclick = () => {
+      closeSheet();
+      showConfirm("Отменить эту запись? Клиенту придёт уведомление.", async () => {
+        try {
+          await api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: slot.id }) });
+          haptic("success");
+          renderProviderSchedule();
+        } catch (e) { showToast("Не получилось"); }
+      });
+    };
+  }
+
+  function openRescheduleSheet(slotId, currentLabel) {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    openSheet(`
+      <div class="sheet-title">Перенести запись</div>
+      <p class="muted" style="margin-top:-8px">Сейчас: ${escapeHtml(currentLabel)}</p>
+      <div class="field">
+        <label class="field-label">Новая дата</label>
+        <input class="input" id="resch-date" type="date" min="${todayStr}" value="${todayStr}" />
+      </div>
+      <div class="field">
+        <label class="field-label">Новое время</label>
+        <input class="input" id="resch-time" type="time" />
+      </div>
+      <button class="btn btn-primary btn-block" id="resch-submit">Перенести</button>
+    `);
+    el("resch-submit").onclick = async () => {
+      const date = el("resch-date").value;
+      const time = el("resch-time").value;
+      if (!date || !time) { showToast("Заполни дату и время"); return; }
+      try {
+        await api("/api/provider/slots/reschedule", {
+          method: "POST",
+          body: JSON.stringify({ slot_id: slotId, new_slot_dt: `${date} ${time}` }),
+        });
+        closeSheet();
+        haptic("success");
+        showToast("Перенесено");
+        renderProviderSchedule();
+      } catch (e) {
+        showToast(e.status === 409 ? "На это время уже есть запись" : "Не получилось перенести");
+      }
+    };
   }
 
   function renderFab(onClick) {
@@ -885,10 +949,15 @@
   let PRESET_STAFF_ID = null;   // выставляется кнопкой «Повторить» из истории записей
   let PRESET_SERVICE_ID = null;
   let ENTERED_PROMO_CODE = null;
+  let RESCHEDULE_SLOT_ID = null;   // выставляется кнопкой «Перенести» — какую запись двигаем
 
   function renderClientBook() {
     const terms = CLIENT_HOME.terms;
-    setHeader(CLIENT_HOME.name, terms.session_pl.charAt(0).toUpperCase() + terms.session_pl.slice(1));
+    const rescheduling = !!RESCHEDULE_SLOT_ID;
+    setHeader(
+      rescheduling ? "Перенос записи" : CLIENT_HOME.name,
+      rescheduling ? "Выбери новое время" : terms.session_pl.charAt(0).toUpperCase() + terms.session_pl.slice(1),
+    );
     hideFab();
     const content = el("content");
 
@@ -898,6 +967,12 @@
     PRESET_SERVICE_ID = null;
 
     let html = "";
+    if (rescheduling) {
+      html += `<div class="card" style="margin-bottom:2px">
+        <p class="muted" style="margin:0">🔄 Выбери новое время — старая запись освободится автоматически.</p>
+        <button class="btn btn-ghost" id="resch-cancel-mode" style="padding:8px 0">Отменить перенос</button>
+      </div>`;
+    }
     if (CLIENT_HOME.services && CLIENT_HOME.services.length) {
       html += `<div class="section-label">Услуга</div><div class="chips" id="service-chips">`;
       CLIENT_HOME.services.forEach((s) => {
@@ -927,25 +1002,36 @@
       html += "</div>";
     }
 
-    html += `<div class="field">
-      <label class="field-label">Промокод (если есть)</label>
-      <div class="input-row">
-        <input class="input" id="promo-input" type="text" maxlength="20" enterkeyhint="done" placeholder="Необязательно" style="text-transform:uppercase" value="${escapeHtml(ENTERED_PROMO_CODE || "")}" />
-        <button class="btn btn-secondary" id="promo-apply-btn" style="flex:0 0 auto">✓</button>
-      </div>
-    </div>`;
+    if (!rescheduling) {
+      html += `<div class="field">
+        <label class="field-label">Промокод (если есть)</label>
+        <div class="input-row">
+          <input class="input" id="promo-input" type="text" maxlength="20" enterkeyhint="done" placeholder="Необязательно" style="text-transform:uppercase" value="${escapeHtml(ENTERED_PROMO_CODE || "")}" />
+          <button class="btn btn-secondary" id="promo-apply-btn" style="flex:0 0 auto">✓</button>
+        </div>
+      </div>`;
+    }
 
     html += `<div id="schedule-area"></div>`;
 
     content.innerHTML = html;
     selectedStaffId = staffExists ? presetStaffId : staffList[0].id;
 
-    el("promo-input").oninput = (e) => { ENTERED_PROMO_CODE = e.target.value.trim().toUpperCase(); };
-    el("promo-input").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
-    el("promo-apply-btn").onclick = () => {
-      el("promo-input").blur();
-      if (ENTERED_PROMO_CODE) showToast(`Промокод «${ENTERED_PROMO_CODE}» применится при записи`);
-    };
+    if (el("resch-cancel-mode")) {
+      el("resch-cancel-mode").onclick = () => {
+        RESCHEDULE_SLOT_ID = null;
+        renderClientBook();
+      };
+    }
+
+    if (el("promo-input")) {
+      el("promo-input").oninput = (e) => { ENTERED_PROMO_CODE = e.target.value.trim().toUpperCase(); };
+      el("promo-input").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+      el("promo-apply-btn").onclick = () => {
+        el("promo-input").blur();
+        if (ENTERED_PROMO_CODE) showToast(`Промокод «${ENTERED_PROMO_CODE}» применится при записи`);
+      };
+    }
 
     if (el("service-chips")) {
       Array.from(el("service-chips").children).forEach((c) => c.onclick = () => {
@@ -1034,6 +1120,27 @@
   }
 
   function confirmBook(slot, date) {
+    if (RESCHEDULE_SLOT_ID) {
+      const oldId = RESCHEDULE_SLOT_ID;
+      showConfirm(`Перенести запись на ${fmtDay(date)} в ${slot.time}?`, async () => {
+        try {
+          await api("/api/client/reschedule", {
+            method: "POST",
+            body: JSON.stringify({ slot_id: oldId, new_slot_id: slot.id }),
+          });
+          haptic("success");
+          showToast("🔄 Перенесено!");
+          RESCHEDULE_SLOT_ID = null;
+          setTab("my");
+        } catch (e) {
+          haptic("error");
+          showToast(e.status === 409 ? "Увы, время уже заняли" : "Не получилось перенести");
+          CLIENT_HOME = await api("/api/client/home", { method: "GET" });
+          renderClientBook();
+        }
+      });
+      return;
+    }
     const terms = CLIENT_HOME.terms;
     const svc = CLIENT_HOME.services.find((s) => String(s.id) === String(selectedServiceId));
     const svcLine = svc ? ` (${svc.name})` : "";
@@ -1067,6 +1174,7 @@
   }
 
   async function renderClientMy() {
+    RESCHEDULE_SLOT_ID = null;   // ушли с экрана переноса, не завершив его — сбрасываем режим
     setHeader("Мои записи", "");
     hideFab();
     const content = el("content");
@@ -1093,12 +1201,15 @@
     if (data.bookings.length) {
       html += '<div class="section-label">Предстоящие</div><div class="card">';
       data.bookings.forEach((b) => {
-        html += `<div class="list-item" data-booking="${b.id}">
+        html += `<div class="list-item">
           <div class="list-item-main">
             <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
             <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}${b.discount_label ? " · 🏷 " + escapeHtml(b.discount_label) : ""}</div>
           </div>
-          <span class="badge badge-warn">Отменить</span>
+          <div style="display:flex;gap:6px;flex:0 0 auto">
+            <button class="btn btn-sm btn-secondary" data-reschedule="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">📅</button>
+            <button class="btn btn-sm btn-danger" data-cancel="${b.id}">Отменить</button>
+          </div>
         </div>`;
       });
       html += "</div>";
@@ -1119,9 +1230,9 @@
     }
 
     content.innerHTML = html;
-    content.querySelectorAll("[data-booking]").forEach((row) => {
-      row.onclick = () => {
-        const id = row.dataset.booking;
+    content.querySelectorAll("[data-cancel]").forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.cancel;
         showConfirm("Точно отменить запись?", async () => {
           try {
             await api("/api/client/cancel", { method: "POST", body: JSON.stringify({ slot_id: id }) });
@@ -1129,6 +1240,14 @@
           } catch (e) { showToast("Не получилось отменить"); }
           renderClientMy();
         });
+      };
+    });
+    content.querySelectorAll("[data-reschedule]").forEach((btn) => {
+      btn.onclick = () => {
+        RESCHEDULE_SLOT_ID = btn.dataset.reschedule;
+        PRESET_STAFF_ID = btn.dataset.staff || null;
+        PRESET_SERVICE_ID = btn.dataset.service || null;
+        setTab("book");
       };
     });
     content.querySelectorAll("[data-repeat]").forEach((row) => {

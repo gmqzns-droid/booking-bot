@@ -473,6 +473,65 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return web.json_response({"ok": True})
 
     @require_auth
+    async def handle_slot_reschedule(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        try:
+            slot_id = int(body.get("slot_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad slot_id"}, status=400)
+        old = db.get_slot(slot_id)
+        if not old or old["trainer_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        if old["status"] != "booked":
+            return web.json_response({"error": "not booked"}, status=400)
+
+        new_slot_id = body.get("new_slot_id")
+        if new_slot_id:
+            new = db.get_slot(int(new_slot_id))
+            if not new or new["trainer_id"] != user["id"] or new["staff_id"] != old["staff_id"]:
+                return web.json_response({"error": "bad new_slot_id"}, status=400)
+            if new["status"] != "free":
+                return web.json_response({"error": "slot taken"}, status=409)
+            new_id = new["id"]
+        else:
+            new_slot_dt = (body.get("new_slot_dt") or "").strip()
+            try:
+                datetime.strptime(new_slot_dt, "%Y-%m-%d %H:%M")
+            except ValueError:
+                return web.json_response({"error": "bad new_slot_dt"}, status=400)
+            existing = db.get_slot_by_dt(old["trainer_id"], old["staff_id"], new_slot_dt)
+            if existing:
+                if existing["id"] == old["id"]:
+                    return web.json_response({"ok": True})
+                if existing["status"] != "free":
+                    return web.json_response({"error": "slot taken"}, status=409)
+                new_id = existing["id"]
+            else:
+                db.add_slot(old["trainer_id"], old["staff_id"], old["staff_name"], new_slot_dt)
+                created = db.get_slot_by_dt(old["trainer_id"], old["staff_id"], new_slot_dt)
+                new_id = created["id"]
+
+        old_dt, client_id = old["slot_dt"], old["client_id"]
+        ok = db.reschedule_slot(old["id"], new_id)
+        if not ok:
+            return web.json_response({"error": "slot taken"}, status=409)
+
+        new_slot = db.get_slot(new_id)
+        if client_id:
+            try:
+                await bot.send_message(
+                    client_id,
+                    f"🔄 Специалист перенёс твою запись с <b>{fmt_slot(old_dt)}</b> "
+                    f"на <b>{fmt_slot(new_slot['slot_dt'])}</b>.",
+                )
+            except Exception:
+                logger.warning("Не удалось уведомить клиента %s о переносе", client_id)
+        await notify_waitlist(old["trainer_id"], old["staff_id"])
+        return web.json_response({"ok": True})
+
+    @require_auth
     async def handle_slot_noshow(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
@@ -739,6 +798,44 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
 
         return web.json_response({"ok": True})
 
+    @require_auth
+    async def handle_client_reschedule(request: web.Request, user: dict) -> web.Response:
+        body = await request.json()
+        try:
+            slot_id = int(body.get("slot_id"))
+            new_slot_id = int(body.get("new_slot_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad slot_id"}, status=400)
+
+        old = db.get_slot(slot_id)
+        if not old or old["client_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        new = db.get_slot(new_slot_id)
+        if not new or new["trainer_id"] != old["trainer_id"] or new["staff_id"] != old["staff_id"]:
+            return web.json_response({"error": "bad new_slot_id"}, status=400)
+        if new["status"] != "free":
+            return web.json_response({"error": "slot taken"}, status=409)
+
+        old_dt = old["slot_dt"]
+        ok = db.reschedule_slot(slot_id, new_slot_id)
+        if not ok:
+            return web.json_response({"error": "slot taken"}, status=409)
+
+        try:
+            full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Клиент"
+            await bot.send_message(
+                old["trainer_id"],
+                f"🔄 {esc(full_name)} перенёс(ла) запись с <b>{fmt_slot(old_dt)}</b> "
+                f"на <b>{fmt_slot(new['slot_dt'])}</b>",
+            )
+        except Exception:
+            logger.warning("Не удалось уведомить специалиста о переносе")
+
+        if old["staff_id"]:
+            await notify_waitlist(old["trainer_id"], old["staff_id"])
+
+        return web.json_response({"ok": True})
+
     def _booking_to_dict(r) -> dict:
         return {
             "id": r["id"], "slot_dt": r["slot_dt"], "trainer_name": r["trainer_name"],
@@ -789,6 +886,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/slots/add", handle_slot_add)
     app.router.add_post("/api/provider/slots/add_recurring", handle_slot_add_recurring)
     app.router.add_post("/api/provider/slots/cancel", handle_slot_cancel)
+    app.router.add_post("/api/provider/slots/reschedule", handle_slot_reschedule)
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)
     app.router.add_get("/api/provider/clients", handle_clients_list)
     app.router.add_get("/api/provider/reviews", handle_provider_reviews)
@@ -801,6 +899,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/client/waitlist/leave", handle_waitlist_leave)
     app.router.add_post("/api/client/book", handle_client_book)
     app.router.add_post("/api/client/cancel", handle_client_cancel)
+    app.router.add_post("/api/client/reschedule", handle_client_reschedule)
     app.router.add_get("/api/client/my", handle_client_my)
     app.router.add_post("/api/debug", handle_debug)
 

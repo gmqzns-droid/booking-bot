@@ -682,6 +682,48 @@ def book_slot(
         return cur.rowcount > 0
 
 
+def get_slot_by_dt(trainer_id: int, staff_id: int, slot_dt: str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM slots WHERE trainer_id=? AND staff_id=? AND slot_dt=?",
+            (trainer_id, staff_id, slot_dt),
+        ).fetchone()
+
+
+def reschedule_slot(old_slot_id: int, new_slot_id: int) -> bool:
+    """Переносит существующую бронь на другой слот того же мастера/сотрудника: копирует
+    клиента, услугу и промокод на новый (свободный) слот и освобождает старый. Атомарно —
+    обе строки обновляются в одной транзакции, чтобы никогда не потерять бронь между шагами."""
+    with get_conn() as conn:
+        old = conn.execute("SELECT * FROM slots WHERE id=?", (old_slot_id,)).fetchone()
+        new = conn.execute("SELECT * FROM slots WHERE id=?", (new_slot_id,)).fetchone()
+        if not old or not new:
+            return False
+        if old["status"] != "booked" or new["status"] != "free":
+            return False
+        if old["trainer_id"] != new["trainer_id"] or old["staff_id"] != new["staff_id"]:
+            return False
+        cur = conn.execute(
+            "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=?, "
+            "service_id=?, service_name=?, promo_code=?, discount_label=?, "
+            "reminder_24h_sent=0, reminder_1h_sent=0, no_show=0 WHERE id=? AND status='free'",
+            (
+                old["client_id"], old["client_name"], old["client_username"],
+                old["service_id"], old["service_name"], old["promo_code"], old["discount_label"],
+                new_slot_id,
+            ),
+        )
+        if cur.rowcount == 0:
+            return False
+        conn.execute(
+            "UPDATE slots SET status='free', client_id=NULL, client_name=NULL, client_username=NULL, "
+            "service_id=NULL, service_name=NULL, promo_code=NULL, discount_label=NULL, "
+            "reminder_24h_sent=0, reminder_1h_sent=0, no_show=0, review_requested=0 WHERE id=?",
+            (old_slot_id,),
+        )
+        return True
+
+
 def cancel_slot(slot_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute("UPDATE slots SET status='cancelled' WHERE id=?", (slot_id,))
