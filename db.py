@@ -95,6 +95,26 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS waitlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trainer_id INTEGER NOT NULL,
+                staff_id INTEGER NOT NULL,
+                staff_name TEXT,
+                client_id INTEGER NOT NULL,
+                client_name TEXT,
+                client_username TEXT,
+                service_id INTEGER,
+                service_name TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_waitlist_staff_client "
+            "ON waitlist(trainer_id, staff_id, client_id)"
+        )
         # Миграции для более старых баз (например, на Railway после обновления кода)
         _ensure_column(conn, "slots", "client_username", "TEXT")
         _ensure_column(conn, "slots", "no_show", "INTEGER NOT NULL DEFAULT 0")
@@ -214,6 +234,61 @@ def count_staff(business_id: int) -> int:
             "SELECT COUNT(*) AS c FROM staff WHERE business_id=? AND active=1", (business_id,)
         ).fetchone()
     return row["c"] if row else 0
+
+
+# ---------- Лист ожидания ----------
+# Клиент встаёт в очередь на конкретного сотрудника, если у него нет свободного
+# времени; при освобождении слота (отмена клиентом или новый слот от специалиста)
+# всем ожидающим шлётся уведомление, а лист для этого сотрудника очищается —
+# кто ещё хочет ждать, встанет заново по следующему разу.
+
+def join_waitlist(
+    trainer_id: int, staff_id: int, staff_name: str,
+    client_id: int, client_name: str, client_username: str | None,
+    service_id: int | None = None, service_name: str | None = None,
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO waitlist (trainer_id, staff_id, staff_name, client_id, client_name, "
+            "client_username, service_id, service_name, created_at) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(trainer_id, staff_id, client_id) DO UPDATE SET "
+            "service_id=excluded.service_id, service_name=excluded.service_name, "
+            "created_at=excluded.created_at",
+            (trainer_id, staff_id, staff_name, client_id, client_name, client_username,
+             service_id, service_name, now_msk().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def leave_waitlist(trainer_id: int, staff_id: int, client_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM waitlist WHERE trainer_id=? AND staff_id=? AND client_id=?",
+            (trainer_id, staff_id, client_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_waitlist_entry(trainer_id: int, staff_id: int, client_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM waitlist WHERE trainer_id=? AND staff_id=? AND client_id=?",
+            (trainer_id, staff_id, client_id),
+        ).fetchone()
+
+
+def pop_waitlist_for_staff(trainer_id: int, staff_id: int):
+    """Возвращает всех, кто ждёт свободного времени у этого сотрудника, и сразу убирает
+    их из листа — уведомление шлётся один раз на освобождение, а не при каждой мелочи."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM waitlist WHERE trainer_id=? AND staff_id=? ORDER BY created_at",
+            (trainer_id, staff_id),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM waitlist WHERE trainer_id=? AND staff_id=?", (trainer_id, staff_id)
+        )
+    return rows
 
 
 # ---------- Услуги ----------

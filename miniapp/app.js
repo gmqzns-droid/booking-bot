@@ -807,8 +807,28 @@
     }
     STAFF_DAYS = data.days || [];
     if (!STAFF_DAYS.length) {
+      const onWaitlist = !!data.on_waitlist;
       area.innerHTML = `<div class="empty-state"><div class="empty-emoji">🗓</div><div class="empty-title">Свободного времени пока нет</div>` +
-        `<div class="empty-text">Загляни чуть позже.</div></div>`;
+        `<div class="empty-text">Загляни чуть позже, или встань в лист ожидания — сообщим, как только время появится.</div></div>` +
+        (onWaitlist
+          ? `<button class="btn btn-secondary btn-block" id="waitlist-btn">✅ Ты в листе ожидания — нажми, чтобы выйти</button>`
+          : `<button class="btn btn-primary btn-block" id="waitlist-btn">🔔 Уведомить, когда освободится</button>`);
+      el("waitlist-btn").onclick = async () => {
+        try {
+          if (onWaitlist) {
+            await api("/api/client/waitlist/leave", { method: "POST", body: JSON.stringify({ staff_id: selectedStaffId }) });
+            showToast("Убрал(а) из листа ожидания");
+          } else {
+            await api("/api/client/waitlist/join", {
+              method: "POST",
+              body: JSON.stringify({ staff_id: selectedStaffId, service_id: selectedServiceId || null }),
+            });
+            haptic("success");
+            showToast("Готово, сообщим при первом освобождении!");
+          }
+          loadStaffSchedule();
+        } catch (e) { showToast("Не получилось, попробуй ещё раз"); }
+      };
       return;
     }
     selectedDate = STAFF_DAYS[0].date;

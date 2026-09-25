@@ -250,7 +250,7 @@ async def main():
 
     # Веб-сервер мини-приложения (API + статика) — крутится в этом же процессе,
     # рядом с long polling бота, на порту, который выдаёт Railway.
-    app = webapp.create_app(bot, BOT_TOKEN, bot_username)
+    app = webapp.create_app(bot, BOT_TOKEN, bot_username, MINI_APP_URL)
     runner = aioweb.AppRunner(app)
     await runner.setup()
     site = aioweb.TCPSite(runner, "0.0.0.0", PORT)

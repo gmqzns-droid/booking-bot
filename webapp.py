@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl
 
 from aiohttp import web
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 import db
 import terminology
@@ -132,8 +133,34 @@ def trainer_public_dict(trainer) -> dict:
     }
 
 
-def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
+def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -> web.Application:
     app = web.Application()
+
+    def open_app_kb() -> InlineKeyboardMarkup | None:
+        """Та же кнопка входа, что и в bot.py — используется в уведомлениях из листа
+        ожидания, чтобы клиент мог сразу открыть приложение и успеть забронировать."""
+        if not mini_app_url:
+            return None
+        url = f"{mini_app_url.rstrip('/')}/miniapp/index.html?_t={int(time.time())}"
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🚀 Открыть приложение", web_app=WebAppInfo(url=url))]]
+        )
+
+    async def notify_waitlist(trainer_id: int, staff_id: int):
+        entries = db.pop_waitlist_for_staff(trainer_id, staff_id)
+        if not entries:
+            return
+        kb = open_app_kb()
+        for entry in entries:
+            try:
+                await bot.send_message(
+                    entry["client_id"],
+                    f"🔔 У <b>{esc(entry['staff_name'] or '')}</b> освободилось время — "
+                    f"открывай приложение, чтобы успеть записаться!",
+                    reply_markup=kb,
+                )
+            except Exception:
+                logger.warning("Не удалось уведомить клиента %s из листа ожидания", entry["client_id"])
 
     def auth_user(request: web.Request):
         """Достаёт и проверяет initData из заголовка X-Telegram-Init-Data.
@@ -364,6 +391,7 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         ok = db.add_slot(user["id"], staff["id"], staff["name"], slot_dt)
         if not ok:
             return web.json_response({"error": "already exists"}, status=409)
+        await notify_waitlist(user["id"], staff["id"])
         return web.json_response({"ok": True})
 
     @require_auth
@@ -395,6 +423,8 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
                     added += 1
                 else:
                     skipped += 1
+        if added:
+            await notify_waitlist(user["id"], staff["id"])
         return web.json_response({"ok": True, "added": added, "skipped": skipped})
 
     @require_auth
@@ -474,7 +504,45 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
             slots = db.list_free_slots_for_day(trainer_id, staff_id, day)
             if slots:
                 days.append({"date": day, "label": fmt_day(day), "slots": [slot_to_dict(s) for s in slots]})
-        return web.json_response({"days": days})
+        on_waitlist = bool(db.get_waitlist_entry(trainer_id, staff_id, user["id"]))
+        return web.json_response({"days": days, "on_waitlist": on_waitlist})
+
+    @require_auth
+    async def handle_waitlist_join(request: web.Request, user: dict) -> web.Response:
+        trainer_id = db.get_client_trainer(user["id"])
+        trainer = db.get_trainer(trainer_id) if trainer_id else None
+        if not trainer:
+            return web.json_response({"error": "no trainer"}, status=404)
+        body = await request.json()
+        try:
+            staff_id = int(body.get("staff_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad staff_id"}, status=400)
+        staff = db.get_staff(staff_id)
+        if not staff or staff["business_id"] != trainer_id:
+            return web.json_response({"error": "not found"}, status=404)
+        service_id = body.get("service_id")
+        service = db.get_service(int(service_id)) if service_id else None
+        full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Без имени"
+        db.join_waitlist(
+            trainer_id, staff["id"], staff["name"], user["id"], full_name, user.get("username"),
+            service_id=service["id"] if service else None,
+            service_name=service["name"] if service else None,
+        )
+        return web.json_response({"ok": True})
+
+    @require_auth
+    async def handle_waitlist_leave(request: web.Request, user: dict) -> web.Response:
+        trainer_id = db.get_client_trainer(user["id"])
+        if not trainer_id:
+            return web.json_response({"error": "no trainer"}, status=404)
+        body = await request.json()
+        try:
+            staff_id = int(body.get("staff_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad staff_id"}, status=400)
+        db.leave_waitlist(trainer_id, staff_id, user["id"])
+        return web.json_response({"ok": True})
 
     @require_auth
     async def handle_client_book(request: web.Request, user: dict) -> web.Response:
@@ -499,6 +567,8 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
 
         slot = db.get_slot(slot_id)
         trainer = db.get_trainer(slot["trainer_id"])
+        if "staff_id" in slot.keys() and slot["staff_id"]:
+            db.leave_waitlist(slot["trainer_id"], slot["staff_id"], user["id"])
         terms = terminology.terms_for(trainer["category_key"])
         service_line = f" — {esc(service['name'])}" if service else ""
         staff_name = slot["staff_name"] if "staff_name" in slot.keys() and slot["staff_name"] else trainer["name"]
@@ -555,6 +625,9 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
         except Exception:
             logger.warning("Не удалось уведомить специалиста об отмене")
 
+        if "staff_id" in slot.keys() and slot["staff_id"]:
+            await notify_waitlist(slot["trainer_id"], slot["staff_id"])
+
         return web.json_response({"ok": True})
 
     @require_auth
@@ -608,6 +681,8 @@ def create_app(bot, bot_token: str, bot_username: str) -> web.Application:
     app.router.add_get("/api/provider/clients", handle_clients_list)
     app.router.add_get("/api/client/home", handle_client_home)
     app.router.add_get("/api/client/staff_schedule", handle_client_staff_schedule)
+    app.router.add_post("/api/client/waitlist/join", handle_waitlist_join)
+    app.router.add_post("/api/client/waitlist/leave", handle_waitlist_leave)
     app.router.add_post("/api/client/book", handle_client_book)
     app.router.add_post("/api/client/cancel", handle_client_cancel)
     app.router.add_get("/api/client/my", handle_client_my)
