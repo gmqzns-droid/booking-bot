@@ -525,6 +525,21 @@ def list_client_bookings(client_id: int):
     return rows
 
 
+def list_client_past_bookings(client_id: int, limit: int = 10):
+    """История прошедших визитов клиента (в т.ч. отменённых до начала) — используется для
+    повтора записи в один тап. Берём и booked (уже прошедшие), и cancelled — но не 'free'
+    (это была бы чужая история, а не клиента)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT slots.*, trainers.name AS trainer_name FROM slots "
+            "JOIN trainers ON trainers.id = slots.trainer_id "
+            "WHERE client_id=? AND status='booked' AND slot_dt < ? "
+            "ORDER BY slot_dt DESC LIMIT ?",
+            (client_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit),
+        ).fetchall()
+    return rows
+
+
 def slots_needing_reminder(field: str, window_start: str, window_end: str):
     with get_conn() as conn:
         rows = conn.execute(

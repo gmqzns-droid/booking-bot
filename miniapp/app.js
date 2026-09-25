@@ -736,6 +736,8 @@
   let selectedStaffId = null;
   let selectedDate = null;
   let STAFF_DAYS = [];
+  let PRESET_STAFF_ID = null;   // выставляется кнопкой «Повторить» из истории записей
+  let PRESET_SERVICE_ID = null;
 
   function renderClientBook() {
     const terms = CLIENT_HOME.terms;
@@ -743,14 +745,20 @@
     hideFab();
     const content = el("content");
 
+    const presetStaffId = PRESET_STAFF_ID;
+    const presetServiceId = PRESET_SERVICE_ID;
+    PRESET_STAFF_ID = null;
+    PRESET_SERVICE_ID = null;
+
     let html = "";
     if (CLIENT_HOME.services && CLIENT_HOME.services.length) {
       html += `<div class="section-label">Услуга</div><div class="chips" id="service-chips">`;
-      CLIENT_HOME.services.forEach((s, i) => {
-        html += `<button class="chip${i === 0 ? " active" : ""}" data-svc="${s.id}">${escapeHtml(s.name)}${s.price ? " · " + s.price + "₽" : ""}</button>`;
+      CLIENT_HOME.services.forEach((s) => {
+        const isActive = presetServiceId ? String(s.id) === String(presetServiceId) : s.id === CLIENT_HOME.services[0].id;
+        html += `<button class="chip${isActive ? " active" : ""}" data-svc="${s.id}">${escapeHtml(s.name)}${s.price ? " · " + s.price + "₽" : ""}</button>`;
       });
       html += "</div>";
-      selectedServiceId = CLIENT_HOME.services[0].id;
+      selectedServiceId = presetServiceId || CLIENT_HOME.services[0].id;
     }
 
     const staffList = CLIENT_HOME.staff || [];
@@ -761,10 +769,13 @@
       return;
     }
 
+    const staffExists = presetStaffId && staffList.some((s) => String(s.id) === String(presetStaffId));
+
     if (CLIENT_HOME.is_business && staffList.length > 1) {
       html += `<div class="section-label">Мастер</div><div class="chips" id="staff-chips">`;
-      staffList.forEach((s, i) => {
-        html += `<button class="chip${i === 0 ? " active" : ""}" data-staff="${s.id}">${escapeHtml(s.name)}</button>`;
+      staffList.forEach((s) => {
+        const isActive = staffExists ? String(s.id) === String(presetStaffId) : s.id === staffList[0].id;
+        html += `<button class="chip${isActive ? " active" : ""}" data-staff="${s.id}">${escapeHtml(s.name)}</button>`;
       });
       html += "</div>";
     }
@@ -772,7 +783,7 @@
     html += `<div id="schedule-area"></div>`;
 
     content.innerHTML = html;
-    selectedStaffId = staffList[0].id;
+    selectedStaffId = staffExists ? presetStaffId : staffList[0].id;
 
     if (el("service-chips")) {
       Array.from(el("service-chips").children).forEach((c) => c.onclick = () => {
@@ -895,25 +906,46 @@
       content.innerHTML = '<div class="empty-state"><div class="empty-text">Не удалось загрузить записи</div></div>';
       return;
     }
-    if (!data.bookings.length) {
+    const whoLine = (b) => (b.staff_name && b.staff_name !== b.trainer_name)
+      ? `${escapeHtml(b.staff_name)} (${escapeHtml(b.trainer_name)})`
+      : escapeHtml(b.trainer_name);
+
+    let html = "";
+
+    if (!data.bookings.length && !(data.past && data.past.length)) {
       content.innerHTML = '<div class="empty-state"><div class="empty-emoji">🗂</div><div class="empty-title">Пока нет записей</div>' +
         '<div class="empty-text">Загляни во вкладку «Запись».</div></div>';
       return;
     }
-    let html = '<div class="card">';
-    data.bookings.forEach((b) => {
-      const whoLine = (b.staff_name && b.staff_name !== b.trainer_name)
-        ? `${escapeHtml(b.staff_name)} (${escapeHtml(b.trainer_name)})`
-        : escapeHtml(b.trainer_name);
-      html += `<div class="list-item" data-booking="${b.id}">
-        <div class="list-item-main">
-          <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
-          <div class="list-item-sub">${whoLine}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}</div>
-        </div>
-        <span class="badge badge-warn">Отменить</span>
-      </div>`;
-    });
-    html += "</div>";
+
+    if (data.bookings.length) {
+      html += '<div class="section-label">Предстоящие</div><div class="card">';
+      data.bookings.forEach((b) => {
+        html += `<div class="list-item" data-booking="${b.id}">
+          <div class="list-item-main">
+            <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
+            <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}</div>
+          </div>
+          <span class="badge badge-warn">Отменить</span>
+        </div>`;
+      });
+      html += "</div>";
+    }
+
+    if (data.past && data.past.length) {
+      html += '<div class="section-label">История</div><div class="card">';
+      data.past.forEach((b) => {
+        html += `<div class="list-item" data-repeat="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">
+          <div class="list-item-main">
+            <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
+            <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}</div>
+          </div>
+          <span class="badge">🔁 Повторить</span>
+        </div>`;
+      });
+      html += "</div>";
+    }
+
     content.innerHTML = html;
     content.querySelectorAll("[data-booking]").forEach((row) => {
       row.onclick = () => {
@@ -925,6 +957,13 @@
           } catch (e) { showToast("Не получилось отменить"); }
           renderClientMy();
         });
+      };
+    });
+    content.querySelectorAll("[data-repeat]").forEach((row) => {
+      row.onclick = () => {
+        PRESET_STAFF_ID = row.dataset.staff || null;
+        PRESET_SERVICE_ID = row.dataset.service || null;
+        setTab("book");
       };
     });
   }

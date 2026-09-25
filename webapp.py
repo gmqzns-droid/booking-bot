@@ -630,18 +630,20 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
 
         return web.json_response({"ok": True})
 
+    def _booking_to_dict(r) -> dict:
+        return {
+            "id": r["id"], "slot_dt": r["slot_dt"], "trainer_name": r["trainer_name"],
+            "service_id": r["service_id"] if "service_id" in r.keys() else None,
+            "service_name": r["service_name"] if "service_name" in r.keys() else None,
+            "staff_id": r["staff_id"] if "staff_id" in r.keys() else None,
+            "staff_name": r["staff_name"] if "staff_name" in r.keys() else None,
+        }
+
     @require_auth
     async def handle_client_my(request: web.Request, user: dict) -> web.Response:
-        rows = db.list_client_bookings(user["id"])
-        bookings = [
-            {
-                "id": r["id"], "slot_dt": r["slot_dt"], "trainer_name": r["trainer_name"],
-                "service_name": r["service_name"] if "service_name" in r.keys() else None,
-                "staff_name": r["staff_name"] if "staff_name" in r.keys() else None,
-            }
-            for r in rows
-        ]
-        return web.json_response({"bookings": bookings})
+        bookings = [_booking_to_dict(r) for r in db.list_client_bookings(user["id"])]
+        past = [_booking_to_dict(r) for r in db.list_client_past_bookings(user["id"])]
+        return web.json_response({"bookings": bookings, "past": past})
 
     # ---------- диагностика (временно, можно снести после стабилизации) ----------
 
