@@ -1238,6 +1238,16 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             )
         return handler
 
+    async def handle_open_redirect(request: web.Request) -> web.Response:
+        """Точка входа для закреплённой (persistent) кнопки на клавиатуре бота — её URL
+        нельзя менять при каждом нажатии (кнопка не пересылается заново, она статична), а
+        Telegram WebView иногда не отдаёт initData при повторном открытии одного и того же
+        статического URL (тот же случай, что описан в open_app_kb() у инлайн-кнопки в
+        bot.py). Поэтому кнопка ведёт сюда, а мы уже на сервере редиректим на index.html
+        со свежей меткой времени в query — с точки зрения WebView это каждый раз новый URL."""
+        raise web.HTTPFound(f"/miniapp/index.html?_t={int(time.time())}")
+
+    app.router.add_get("/miniapp/open", handle_open_redirect)
     app.router.add_get("/miniapp/index.html", handle_index)
     app.router.add_get("/miniapp/style.css", make_static_asset_handler("style.css", "text/css"))
     app.router.add_get("/miniapp/app.js", make_static_asset_handler("app.js", "application/javascript"))

@@ -102,7 +102,11 @@ def persistent_kb() -> ReplyKeyboardMarkup | None:
     доступной в любой момент, а не только сразу под тем сообщением, где её показали."""
     if not MINI_APP_URL:
         return None
-    url = f"{MINI_APP_URL}/miniapp/index.html"
+    # Ведём не напрямую на index.html, а через /miniapp/open — сервер редиректит оттуда
+    # на index.html со свежей меткой времени в query при каждом нажатии, иначе один и тот
+    # же статический URL закреплённой кнопки иногда открывается Telegram без initData
+    # (тот же приём, что и в open_app_kb() для инлайн-кнопки).
+    url = f"{MINI_APP_URL}/miniapp/open"
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🚀 Открыть Запишись", web_app=WebAppInfo(url=url))]],
         resize_keyboard=True,
