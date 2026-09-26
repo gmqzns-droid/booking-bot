@@ -1,22 +1,28 @@
 :root {
-  --tg-bg: #ffffff;
-  --tg-text: #0f172a;
-  --tg-hint: #8b93a1;
-  --tg-link: #2481cc;
-  --tg-button: #2481cc;
-  --tg-button-text: #ffffff;
-  --tg-secondary-bg: #f4f5f7;
-  --tg-destructive: #e53e3e;
+  --tg-bg: #FBF5ED;
+  --tg-card: #FFFDF9;
+  --tg-text: #3B2E26;
+  --tg-hint: #A08972;
+  --tg-hint-soft: #C2AB98;
+  --tg-link: #C97B5D;
+  --tg-button: #C97B5D;
+  --tg-button-text: #FFFDF9;
+  --tg-secondary-bg: #F3E5D8;
+  --tg-destructive: #B14636;
+  --tg-destructive-bg: rgba(196, 72, 59, 0.10);
 
-  --radius-lg: 18px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
+  --font-serif: 'Playfair Display', Georgia, serif;
+
+  --radius-lg: 24px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
-  --card-border: rgba(127, 127, 127, 0.14);
+  --card-border: rgba(201, 123, 93, 0.14);
+  --card-shadow: 0 16px 32px -14px rgba(120, 90, 60, 0.20);
 }
 
 * { box-sizing: border-box; }
@@ -28,7 +34,7 @@ html, body {
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
-  background: var(--tg-secondary-bg);
+  background: var(--tg-bg);
   color: var(--tg-text);
   -webkit-font-smoothing: antialiased;
   touch-action: manipulation; /* убирает жест зума по двойному тапу и 300мс задержку тапа */
@@ -63,23 +69,25 @@ body {
 /* ---------- Верхняя панель ---------- */
 
 .topbar {
-  padding: 18px 18px 14px;
+  padding: 26px 18px 16px;
   background: var(--tg-bg);
-  border-bottom: 1px solid var(--card-border);
   position: sticky;
   top: 0;
   z-index: 5;
 }
 
 .topbar-title {
-  font-size: 20px;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 26px;
   font-weight: 700;
   letter-spacing: -0.01em;
+  color: var(--tg-text);
 }
 
 .topbar-subtitle {
-  margin-top: 2px;
-  font-size: 13px;
+  margin-top: 4px;
+  font-size: 13.5px;
   color: var(--tg-hint);
 }
 
@@ -87,7 +95,7 @@ body {
 
 .content {
   flex: 1;
-  padding: 14px 14px 90px;
+  padding: 10px 14px 90px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -105,10 +113,11 @@ body {
 /* ---------- Карточки ---------- */
 
 .card {
-  background: var(--tg-bg);
+  background: var(--tg-card);
   border: 1px solid var(--card-border);
   border-radius: var(--radius-lg);
-  padding: 16px;
+  box-shadow: var(--card-shadow);
+  padding: 18px;
 }
 
 .card-title {
@@ -154,7 +163,7 @@ body {
   padding: 12px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--card-border);
-  background: var(--tg-secondary-bg);
+  background: #FBF5ED;
   color: var(--tg-text);
   font-size: 16px; /* >=16px не даёт iOS Safari/WebView автозумить при фокусе на поле */
   outline: none;
@@ -180,21 +189,22 @@ body {
 .btn-block { width: 100%; }
 
 .btn-primary { background: var(--tg-button); color: var(--tg-button-text); }
-.btn-secondary { background: var(--tg-secondary-bg); color: var(--tg-text); }
-.btn-danger { background: rgba(229, 62, 62, 0.12); color: var(--tg-destructive); }
+.btn-secondary { background: var(--tg-secondary-bg); color: #8A5A3F; }
+.btn-danger { background: var(--tg-destructive-bg); color: var(--tg-destructive); }
 .btn-ghost { background: transparent; color: var(--tg-link); padding: 8px 10px; }
 
-.btn-sm { padding: 8px 12px; font-size: 13px; border-radius: 8px; }
+.btn-sm { padding: 8px 12px; font-size: 13px; border-radius: 10px; }
 
 .btn:active { opacity: 0.75; }
 
 .icon-btn {
   border: none;
-  background: none;
+  background: var(--tg-secondary-bg);
   font-size: 18px;
   cursor: pointer;
   padding: 6px;
-  color: var(--tg-hint);
+  border-radius: 14px;
+  color: var(--tg-button);
 }
 
 /* ---------- Табы / чипы ---------- */
@@ -235,7 +245,7 @@ body {
   padding: 12px 4px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--card-border);
-  background: var(--tg-bg);
+  background: var(--tg-card);
   color: var(--tg-text);
   font-size: 14.5px;
   font-weight: 500;
@@ -265,13 +275,14 @@ body {
   display: inline-block;
   font-size: 11px;
   font-weight: 600;
-  padding: 3px 8px;
+  padding: 4px 10px;
   border-radius: 999px;
   background: var(--tg-secondary-bg);
-  color: var(--tg-hint);
+  color: #8A5A3F;
 }
 
-.badge-warn { background: rgba(229, 62, 62, 0.12); color: var(--tg-destructive); }
+.badge-warn { background: var(--tg-destructive-bg); color: var(--tg-destructive); }
+.badge-accent { background: var(--tg-button); color: var(--tg-button-text); }
 
 /* ---------- Нижняя навигация ---------- */
 
@@ -279,9 +290,9 @@ body {
   position: fixed;
   left: 0; right: 0; bottom: 0;
   display: flex;
-  background: var(--tg-bg);
+  background: var(--tg-card);
   border-top: 1px solid var(--card-border);
-  padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+  padding: 10px 6px calc(6px + env(safe-area-inset-bottom));
   z-index: 10;
 }
 
@@ -290,24 +301,32 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   padding: 6px 4px;
   border: none;
   background: none;
-  color: var(--tg-hint);
+  color: var(--tg-hint-soft);
   font-size: 11px;
   cursor: pointer;
 }
 
-.tab-item .tab-icon { font-size: 19px; }
+.tab-item .tab-icon {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tab-item .tab-icon svg { width: 22px; height: 22px; }
 .tab-item.active { color: var(--tg-button); }
+.tab-item.active .tab-label { font-weight: 600; }
 
 /* ---------- Overlay: подтверждение / нижний лист ---------- */
 
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.42);
+  background: rgba(59, 46, 38, 0.38);
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -319,8 +338,8 @@ body {
 .confirm-card, .sheet-card {
   width: 100%;
   max-width: 480px;
-  background: var(--tg-bg);
-  border-radius: 20px 20px 0 0;
+  background: var(--tg-card);
+  border-radius: 24px 24px 0 0;
   padding: 20px 16px calc(24px + env(safe-area-inset-bottom));
   max-height: 82vh;
   overflow-y: auto;
@@ -337,7 +356,9 @@ body {
 .confirm-actions .btn { flex: 1; }
 
 .sheet-title {
-  font-size: 17px;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 19px;
   font-weight: 700;
   margin-bottom: 14px;
 }
@@ -350,7 +371,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   background: var(--tg-text);
-  color: var(--tg-bg);
+  color: var(--tg-card);
   padding: 10px 18px;
   border-radius: 999px;
   font-size: 13.5px;
@@ -367,7 +388,7 @@ body {
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   color: var(--tg-hint);
   margin: 4px 2px 0;
 }
@@ -383,7 +404,7 @@ body {
   color: var(--tg-button-text);
   border: none;
   font-size: 26px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.22);
+  box-shadow: 0 14px 26px -8px rgba(201, 123, 93, 0.55);
   cursor: pointer;
   z-index: 8;
 }

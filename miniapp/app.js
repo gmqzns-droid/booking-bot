@@ -17,16 +17,21 @@
   // ---------- утилиты ----------
 
   function applyTheme() {
-    if (!tg || !tg.themeParams) return;
-    const tp = tg.themeParams;
-    const root = document.documentElement.style;
-    const map = {
-      bg_color: "--tg-bg", text_color: "--tg-text", hint_color: "--tg-hint",
-      link_color: "--tg-link", button_color: "--tg-button", button_text_color: "--tg-button-text",
-      secondary_bg_color: "--tg-secondary-bg", destructive_text_color: "--tg-destructive",
-    };
-    Object.entries(map).forEach(([k, v]) => { if (tp[k]) root.setProperty(v, tp[k]); });
+    // Приложение использует собственный фирменный стиль ("тёплый бутик"),
+    // независимый от цветовой темы Telegram — тему клиента сюда намеренно не подтягиваем.
   }
+
+  // ---------- иконки таббара (inline SVG вместо эмодзи) ----------
+
+  const TAB_ICONS = {
+    schedule: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 3v3M16 3v3"/></svg>',
+    services: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M8 7V5.5A2.5 2.5 0 0 1 10.5 3h3A2.5 2.5 0 0 1 16 5.5V7"/><path d="M3 12h18"/></svg>',
+    staff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.6 20c0-3.6 2.9-6.5 6.4-6.5s6.4 2.9 6.4 6.5"/><circle cx="17.5" cy="8.8" r="2.3"/><path d="M15.8 13.6c2.7.5 4.8 2.7 4.8 6"/></svg>',
+    clients: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8" r="3.2"/><path d="M2 20c0-3.6 2.9-6.5 6.5-6.5S15 16.4 15 20"/><circle cx="17.5" cy="8.8" r="2.3"/><path d="M15.8 13.6c2.7.5 4.8 2.7 4.8 6"/></svg>',
+    profile: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.2 14.8a1.6 1.6 0 0 0 .33 1.76l.05.05a1.9 1.9 0 1 1-2.7 2.7l-.05-.05a1.6 1.6 0 0 0-1.76-.33 1.6 1.6 0 0 0-.97 1.47V21a1.9 1.9 0 0 1-3.8 0v-.1a1.6 1.6 0 0 0-1.05-1.47 1.6 1.6 0 0 0-1.76.33l-.05.05a1.9 1.9 0 1 1-2.7-2.7l.05-.05A1.6 1.6 0 0 0 5.1 15a1.6 1.6 0 0 0-1.47-.97H3.5a1.9 1.9 0 0 1 0-3.8h.1A1.6 1.6 0 0 0 5.1 9.2a1.6 1.6 0 0 0-.33-1.76l-.05-.05a1.9 1.9 0 1 1 2.7-2.7l.05.05A1.6 1.6 0 0 0 9.2 4.8a1.6 1.6 0 0 0 .97-1.47V3.2a1.9 1.9 0 0 1 3.8 0v.1a1.6 1.6 0 0 0 .97 1.5 1.6 1.6 0 0 0 1.76-.33l.05-.05a1.9 1.9 0 1 1 2.7 2.7l-.05.05a1.6 1.6 0 0 0-.33 1.76v.03a1.6 1.6 0 0 0 1.47.97h.15a1.9 1.9 0 0 1 0 3.8h-.1a1.6 1.6 0 0 0-1.5.97z"/></svg>',
+    book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 3v3M16 3v3"/></svg>',
+    my: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+  };
 
   function fmtDay(dateStr) {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -199,18 +204,18 @@
     el("screen-app").hidden = false;
     const tabs = role === "provider"
       ? [
-          { id: "schedule", icon: "🗓", label: "Расписание" },
-          { id: "services", icon: "💼", label: "Услуги" },
-          ...(PROVIDER.is_business ? [{ id: "staff", icon: "🧑‍🤝‍🧑", label: "Сотрудники" }] : []),
-          { id: "clients", icon: "👥", label: "Клиенты" },
-          { id: "profile", icon: "⚙️", label: "Профиль" },
+          { id: "schedule", icon: "schedule", label: "Расписание" },
+          { id: "services", icon: "services", label: "Услуги" },
+          ...(PROVIDER.is_business ? [{ id: "staff", icon: "staff", label: "Сотрудники" }] : []),
+          { id: "clients", icon: "clients", label: "Клиенты" },
+          { id: "profile", icon: "profile", label: "Профиль" },
         ]
       : [
-          { id: "book", icon: "📅", label: "Запись" },
-          { id: "my", icon: "🗂", label: "Мои записи" },
+          { id: "book", icon: "book", label: "Запись" },
+          { id: "my", icon: "my", label: "Мои записи" },
         ];
     el("tabbar").innerHTML = tabs.map((t) =>
-      `<button class="tab-item" data-tab="${t.id}"><span class="tab-icon">${t.icon}</span><span>${t.label}</span></button>`
+      `<button class="tab-item" data-tab="${t.id}"><span class="tab-icon">${TAB_ICONS[t.icon] || ""}</span><span class="tab-label">${t.label}</span></button>`
     ).join("");
     Array.from(el("tabbar").querySelectorAll(".tab-item")).forEach((btn) => {
       btn.onclick = () => setTab(btn.dataset.tab);
