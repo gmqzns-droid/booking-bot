@@ -126,7 +126,12 @@ def staff_to_dict(row) -> dict:
 
 
 def branch_to_dict(row) -> dict:
-    return {"id": row["id"], "name": row["name"], "address": row["address"]}
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "address": row["address"],
+        "phone": row["phone"] if "phone" in row.keys() else None,
+    }
 
 
 def promo_discount_label(promo) -> str:
@@ -158,6 +163,7 @@ def trainer_public_dict(trainer) -> dict:
         "name": trainer["name"],
         "category": trainer["category"],
         "address": trainer["address"] if "address" in trainer.keys() else None,
+        "phone": trainer["phone"] if "phone" in trainer.keys() else None,
         "is_business": bool(trainer["is_business"]) if "is_business" in trainer.keys() else False,
         "cancel_min_hours": trainer["cancel_min_hours"] if "cancel_min_hours" in trainer.keys() else 0,
         "terms": terms,
@@ -232,6 +238,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                     "name": trainer["name"],
                     "category": trainer["category"],
                     "address": trainer["address"] if "address" in trainer.keys() else None,
+                    "phone": trainer["phone"] if "phone" in trainer.keys() else None,
                     "is_business": bool(trainer["is_business"]),
                     "cancel_min_hours": trainer["cancel_min_hours"] if "cancel_min_hours" in trainer.keys() else 0,
                     "terms": terminology.terms_for(trainer["category_key"]),
@@ -283,6 +290,9 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if "address" in body:
             address = (body.get("address") or "").strip()[:200]
             db.set_trainer_address(user["id"], address or None)
+        if "phone" in body:
+            phone = (body.get("phone") or "").strip()[:40]
+            db.set_trainer_phone(user["id"], phone or None)
         if "is_business" in body:
             want_business = bool(body.get("is_business"))
             if not want_business and db.count_staff(user["id"]) > 1:
@@ -368,7 +378,8 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         address = (body.get("address") or "").strip()[:200] or None
-        bid = db.add_branch(user["id"], name, address)
+        phone = (body.get("phone") or "").strip()[:40] or None
+        bid = db.add_branch(user["id"], name, address, phone)
         return web.json_response({"ok": True, "id": bid})
 
     @require_auth
@@ -384,7 +395,8 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         address = (body.get("address") or "").strip()[:200] or None
-        db.update_branch(branch["id"], name=name, address=address)
+        phone = (body.get("phone") or "").strip()[:40] or None
+        db.update_branch(branch["id"], name=name, address=address, phone=phone)
         return web.json_response({"ok": True})
 
     @require_auth

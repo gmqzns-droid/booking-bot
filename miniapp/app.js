@@ -717,7 +717,7 @@
         html += `<div class="list-item" data-branch="${b.id}">
           <div class="list-item-main">
             <div class="list-item-title">${escapeHtml(b.name)}</div>
-            <div class="list-item-sub">${escapeHtml(b.address || "Без адреса")}</div>
+            <div class="list-item-sub">${escapeHtml(b.address || "Без адреса")}${b.phone ? " · " + escapeHtml(b.phone) : ""}</div>
           </div>
           <span class="badge">Изменить</span>
         </div>`;
@@ -744,6 +744,11 @@
         <label class="field-label">Адрес</label>
         <input class="input" id="branch-address" type="text" maxlength="200" value="${isEdit ? escapeHtml(branch.address || "") : ""}" placeholder="ул. Ленина, 10" />
       </div>
+      <div class="field">
+        <label class="field-label">Телефон (необязательно)</label>
+        <input class="input" id="branch-phone" type="tel" maxlength="40" value="${isEdit ? escapeHtml(branch.phone || "") : ""}" placeholder="+7 999 123-45-67" />
+        <div class="field-hint">Если не указать — клиенту покажется общий телефон из профиля (если он там задан).</div>
+      </div>
       <button class="btn btn-primary btn-block" id="branch-submit" style="margin-bottom:10px">Сохранить</button>
       ${isEdit ? '<button class="btn btn-danger btn-block" id="branch-delete">Удалить филиал</button>' : ""}
     `);
@@ -751,12 +756,13 @@
     el("branch-submit").onclick = async () => {
       const name = el("branch-name").value.trim();
       const address = el("branch-address").value.trim();
+      const phone = el("branch-phone").value.trim();
       if (!name) { showToast("Укажи название"); return; }
       try {
         if (isEdit) {
-          await api("/api/provider/branches/update", { method: "POST", body: JSON.stringify({ id: branch.id, name, address }) });
+          await api("/api/provider/branches/update", { method: "POST", body: JSON.stringify({ id: branch.id, name, address, phone }) });
         } else {
-          await api("/api/provider/branches/add", { method: "POST", body: JSON.stringify({ name, address }) });
+          await api("/api/provider/branches/add", { method: "POST", body: JSON.stringify({ name, address, phone }) });
         }
         closeSheet();
         haptic("success");
@@ -988,6 +994,11 @@
           <div class="field-hint">Покажется клиенту в «Моих записях» рядом с записью.</div>
         </div>
         <div class="field">
+          <label class="field-label">Телефон (необязательно)</label>
+          <input class="input" id="pf-phone" type="tel" maxlength="40" placeholder="+7 999 123-45-67" value="${escapeHtml(PROVIDER.phone || "")}" />
+          <div class="field-hint">Тоже покажется клиенту в «Моих записях». Если у филиалов свой номер — он укажется в «Филиалах» и заменит этот.</div>
+        </div>
+        <div class="field">
           <label class="field-label">Не отменять позже чем за N часов</label>
           <input class="input" id="pf-cancel-hours" type="number" min="0" max="168" step="1" value="${PROVIDER.cancel_min_hours || 0}" />
           <div class="field-hint">0 — можно отменять в любой момент. Действует и на перенос записи клиентом.</div>
@@ -1041,16 +1052,18 @@
       const name = el("pf-name").value.trim();
       const category = el("pf-category").value.trim();
       const address = el("pf-address").value.trim();
+      const phone = el("pf-phone").value.trim();
       const cancelHours = Math.max(0, parseInt(el("pf-cancel-hours").value, 10) || 0);
       if (!name) { showToast("Укажи имя"); return; }
       try {
         await api("/api/provider/profile", {
           method: "POST",
-          body: JSON.stringify({ name, category, address, cancel_min_hours: cancelHours }),
+          body: JSON.stringify({ name, category, address, phone, cancel_min_hours: cancelHours }),
         });
         PROVIDER.name = name;
         PROVIDER.category = category;
         PROVIDER.address = address;
+        PROVIDER.phone = phone;
         PROVIDER.cancel_min_hours = cancelHours;
         haptic("success");
         showToast("Сохранено");
@@ -1624,6 +1637,7 @@
             <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
             <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}${b.discount_label ? " · 🏷 " + escapeHtml(b.discount_label) : ""}</div>
             ${b.trainer_address ? `<div class="list-item-sub" style="margin-top:2px">📍 ${b.branch_name ? escapeHtml(b.branch_name) + " · " : ""}${escapeHtml(b.trainer_address)}</div>` : ""}
+            ${b.trainer_phone ? `<div class="list-item-sub" style="margin-top:2px">☎ ${escapeHtml(b.trainer_phone)}</div>` : ""}
           </div>
           <div style="display:flex;gap:6px;flex:0 0 auto">
             <button class="btn btn-sm btn-secondary" data-reschedule="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">📅</button>

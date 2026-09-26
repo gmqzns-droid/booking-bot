@@ -213,6 +213,8 @@ def init_db():
         _ensure_column(conn, "clients", "custom_name", "TEXT")
         _ensure_column(conn, "slots", "client_custom_name", "TEXT")
         _ensure_column(conn, "staff", "branch_id", "INTEGER")
+        _ensure_column(conn, "trainers", "phone", "TEXT")
+        _ensure_column(conn, "branches", "phone", "TEXT")
 
         # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
         # специалист одновременно, вторая привязка тихо затирала первую). Переносим
@@ -294,7 +296,7 @@ def set_trainer_is_business(trainer_id: int, is_business: bool):
 # ---------- Филиалы (для бизнес-аккаунтов с сетью — необязательная надстройка;
 # бизнес без единого добавленного филиала работает как раньше, одной локацией) ----------
 
-def add_branch(business_id: int, name: str, address: str | None = None) -> int:
+def add_branch(business_id: int, name: str, address: str | None = None, phone: str | None = None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM branches WHERE business_id=?",
@@ -302,9 +304,9 @@ def add_branch(business_id: int, name: str, address: str | None = None) -> int:
         )
         pos = cur.fetchone()["pos"]
         cur = conn.execute(
-            "INSERT INTO branches (business_id, name, address, active, position, created_at) "
-            "VALUES (?, ?, ?, 1, ?, ?)",
-            (business_id, name, address, pos, now_msk().isoformat()),
+            "INSERT INTO branches (business_id, name, address, phone, active, position, created_at) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (business_id, name, address, phone, pos, now_msk().isoformat()),
         )
         return cur.lastrowid
 
@@ -323,12 +325,16 @@ def get_branch(branch_id: int):
         return conn.execute("SELECT * FROM branches WHERE id=?", (branch_id,)).fetchone()
 
 
-def update_branch(branch_id: int, name: str | None = None, address: str | None = None):
+def update_branch(branch_id: int, name: str, address: str | None = None, phone: str | None = None):
+    """Единственный вызывающий (handle_branches_update) всегда шлёт все три поля разом
+    (это один form-сабмит), поэтому address=None/phone=None здесь означает "очистить",
+    а не "не менять" — раньше это было раздельными UPDATE с проверкой на None, из-за
+    чего очистка адреса/телефона до пустого значения тихо не срабатывала."""
     with get_conn() as conn:
-        if name is not None:
-            conn.execute("UPDATE branches SET name=? WHERE id=?", (name, branch_id))
-        if address is not None:
-            conn.execute("UPDATE branches SET address=? WHERE id=?", (address, branch_id))
+        conn.execute(
+            "UPDATE branches SET name=?, address=?, phone=? WHERE id=?",
+            (name, address, phone, branch_id),
+        )
 
 
 def delete_branch(branch_id: int):
@@ -946,6 +952,11 @@ def set_trainer_address(trainer_id: int, address: str | None):
         conn.execute("UPDATE trainers SET address=? WHERE id=?", (address, trainer_id))
 
 
+def set_trainer_phone(trainer_id: int, phone: str | None):
+    with get_conn() as conn:
+        conn.execute("UPDATE trainers SET phone=? WHERE id=?", (phone, trainer_id))
+
+
 def find_overlapping_booked_slot(
     trainer_id: int, staff_id: int, slot_dt: str, duration_min: int | None, exclude_slot_id: int | None = None
 ):
@@ -1065,6 +1076,7 @@ def list_client_bookings(client_id: int):
         rows = conn.execute(
             "SELECT slots.*, trainers.name AS trainer_name, "
             "COALESCE(branches.address, trainers.address) AS trainer_address, "
+            "COALESCE(branches.phone, trainers.phone) AS trainer_phone, "
             "branches.name AS branch_name "
             "FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
@@ -1084,6 +1096,7 @@ def list_client_past_bookings(client_id: int, limit: int = 10):
         rows = conn.execute(
             "SELECT slots.*, trainers.name AS trainer_name, "
             "COALESCE(branches.address, trainers.address) AS trainer_address, "
+            "COALESCE(branches.phone, trainers.phone) AS trainer_phone, "
             "branches.name AS branch_name "
             "FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
