@@ -97,6 +97,34 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS branches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                business_id INTEGER NOT NULL,   -- = trainers.id владельца сети
+                name TEXT NOT NULL,
+                address TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS client_links (
+                client_id INTEGER NOT NULL,
+                trainer_id INTEGER NOT NULL,
+                name TEXT,
+                username TEXT,
+                custom_name TEXT,
+                blocked INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_opened_at TEXT,
+                PRIMARY KEY (client_id, trainer_id)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS waitlist (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trainer_id INTEGER NOT NULL,
@@ -184,6 +212,22 @@ def init_db():
         _ensure_column(conn, "trainers", "address", "TEXT")
         _ensure_column(conn, "clients", "custom_name", "TEXT")
         _ensure_column(conn, "slots", "client_custom_name", "TEXT")
+        _ensure_column(conn, "staff", "branch_id", "INTEGER")
+
+        # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
+        # специалист одновременно, вторая привязка тихо затирала первую). Переносим
+        # накопленные строки в client_links (составной ключ client_id+trainer_id), где
+        # клиент может быть привязан сразу к нескольким специалистам. Разовая операция —
+        # выполняется только если client_links ещё пустая, а старые данные есть.
+        already_migrated = conn.execute("SELECT 1 FROM client_links LIMIT 1").fetchone()
+        old_clients_exist = conn.execute("SELECT 1 FROM clients LIMIT 1").fetchone()
+        if not already_migrated and old_clients_exist:
+            conn.execute(
+                "INSERT OR IGNORE INTO client_links "
+                "(client_id, trainer_id, name, username, custom_name, blocked, created_at, last_opened_at) "
+                "SELECT id, trainer_id, name, username, custom_name, blocked, created_at, created_at FROM clients"
+            )
+
         # У слотов, заведённых до появления сотрудников, уникальный индекс был на
         # (trainer_id, slot_dt) — теперь то же самое время может быть свободно у РАЗНЫХ
         # сотрудников одного бизнеса, поэтому индекс должен учитывать staff_id.
@@ -247,10 +291,70 @@ def set_trainer_is_business(trainer_id: int, is_business: bool):
         )
 
 
+# ---------- Филиалы (для бизнес-аккаунтов с сетью — необязательная надстройка;
+# бизнес без единого добавленного филиала работает как раньше, одной локацией) ----------
+
+def add_branch(business_id: int, name: str, address: str | None = None) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM branches WHERE business_id=?",
+            (business_id,),
+        )
+        pos = cur.fetchone()["pos"]
+        cur = conn.execute(
+            "INSERT INTO branches (business_id, name, address, active, position, created_at) "
+            "VALUES (?, ?, ?, 1, ?, ?)",
+            (business_id, name, address, pos, now_msk().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def list_branches(business_id: int, active_only: bool = True):
+    with get_conn() as conn:
+        q = "SELECT * FROM branches WHERE business_id=?"
+        if active_only:
+            q += " AND active=1"
+        q += " ORDER BY position, id"
+        return conn.execute(q, (business_id,)).fetchall()
+
+
+def get_branch(branch_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM branches WHERE id=?", (branch_id,)).fetchone()
+
+
+def update_branch(branch_id: int, name: str | None = None, address: str | None = None):
+    with get_conn() as conn:
+        if name is not None:
+            conn.execute("UPDATE branches SET name=? WHERE id=?", (name, branch_id))
+        if address is not None:
+            conn.execute("UPDATE branches SET address=? WHERE id=?", (address, branch_id))
+
+
+def delete_branch(branch_id: int):
+    """Отключает филиал; закреплённых за ним сотрудников открепляет (branch_id=NULL),
+    а не удаляет — они остаются в общем списке без привязки к филиалу."""
+    with get_conn() as conn:
+        conn.execute("UPDATE staff SET branch_id=NULL WHERE branch_id=?", (branch_id,))
+        conn.execute("UPDATE branches SET active=0 WHERE id=?", (branch_id,))
+
+
+def count_branches(business_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM branches WHERE business_id=? AND active=1", (business_id,)
+        ).fetchone()
+    return row["c"] if row else 0
+
+
 # ---------- Сотрудники (актуально для бизнес-аккаунтов; у соло-специалиста
 # всегда ровно одна запись здесь, заведённая автоматически при регистрации) ----------
 
-def add_staff(business_id: int, name: str) -> int:
+_UNSET = object()
+UNSET = _UNSET  # публичный алиас — вызывающий код (webapp.py) использует его как "не менять"
+
+
+def add_staff(business_id: int, name: str, branch_id: int | None = None) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM staff WHERE business_id=?",
@@ -258,20 +362,24 @@ def add_staff(business_id: int, name: str) -> int:
         )
         pos = cur.fetchone()["pos"]
         cur = conn.execute(
-            "INSERT INTO staff (business_id, name, active, position, created_at) "
-            "VALUES (?, ?, 1, ?, ?)",
-            (business_id, name, pos, now_msk().isoformat()),
+            "INSERT INTO staff (business_id, name, branch_id, active, position, created_at) "
+            "VALUES (?, ?, ?, 1, ?, ?)",
+            (business_id, name, branch_id, pos, now_msk().isoformat()),
         )
         return cur.lastrowid
 
 
-def list_staff(business_id: int, active_only: bool = True):
+def list_staff(business_id: int, active_only: bool = True, branch_id=_UNSET):
     with get_conn() as conn:
         q = "SELECT * FROM staff WHERE business_id=?"
+        params = [business_id]
         if active_only:
             q += " AND active=1"
+        if branch_id is not _UNSET:
+            q += " AND branch_id IS ?"
+            params.append(branch_id)
         q += " ORDER BY position, id"
-        return conn.execute(q, (business_id,)).fetchall()
+        return conn.execute(q, params).fetchall()
 
 
 def get_staff(staff_id: int):
@@ -279,10 +387,12 @@ def get_staff(staff_id: int):
         return conn.execute("SELECT * FROM staff WHERE id=?", (staff_id,)).fetchone()
 
 
-def update_staff(staff_id: int, name: str | None = None):
+def update_staff(staff_id: int, name: str | None = None, branch_id=_UNSET):
     with get_conn() as conn:
         if name is not None:
             conn.execute("UPDATE staff SET name=? WHERE id=?", (name, staff_id))
+        if branch_id is not _UNSET:
+            conn.execute("UPDATE staff SET branch_id=? WHERE id=?", (branch_id, staff_id))
 
 
 def delete_staff(staff_id: int):
@@ -591,27 +701,64 @@ def list_trainers_by_specialty(specialty: str):
         ).fetchall()
 
 
-# ---------- Привязка клиента к "своему" тренеру ----------
+# ---------- Привязка клиента к специалисту(-ам) ----------
+# Один и тот же человек в Telegram может быть клиентом сразу нескольких специалистов,
+# использующих сервис, — client_links хранит эту связь как (client_id, trainer_id),
+# а не как одну запись на клиента, поэтому открытие ссылки одного мастера не отвязывает
+# от другого. last_opened_at отмечает, какую из связей клиент открывал последней —
+# по нему определяется, чей кабинет показать, когда клиент открывает приложение
+# не по конкретной ссылке (например, с постоянной кнопки).
 
 def link_client(client_id: int, trainer_id: int, name: str | None = None, username: str | None = None):
+    now = now_msk().isoformat()
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO clients (id, trainer_id, name, username, created_at) "
-            "VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM clients WHERE id=?), ?))",
-            (client_id, trainer_id, name, username, client_id, now_msk().isoformat()),
+            "INSERT INTO client_links (client_id, trainer_id, name, username, created_at, last_opened_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(client_id, trainer_id) DO UPDATE SET "
+            "name=excluded.name, username=excluded.username, last_opened_at=excluded.last_opened_at",
+            (client_id, trainer_id, name, username, now, now),
+        )
+
+
+def touch_client_link(client_id: int, trainer_id: int):
+    """Отмечает связь как последнюю открытую — используется, когда клиент явно выбирает,
+    к какому из своих специалистов зайти (переключатель в приложении)."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE client_links SET last_opened_at=? WHERE client_id=? AND trainer_id=?",
+            (now_msk().isoformat(), client_id, trainer_id),
         )
 
 
 def get_client_trainer(client_id: int):
+    """Тренер последней открытой связи клиента (для обратной совместимости с местами,
+    которым важен только 'текущий' бизнес). Для полного списка — list_client_links."""
     with get_conn() as conn:
-        row = conn.execute("SELECT trainer_id FROM clients WHERE id=?", (client_id,)).fetchone()
+        row = conn.execute(
+            "SELECT trainer_id FROM client_links WHERE client_id=? "
+            "ORDER BY last_opened_at DESC, created_at DESC LIMIT 1",
+            (client_id,),
+        ).fetchone()
     return row["trainer_id"] if row else None
+
+
+def list_client_links(client_id: int):
+    """Все специалисты, к которым привязан этот клиент, самый недавно открытый — первым."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT cl.*, trainers.name AS trainer_name FROM client_links cl "
+            "JOIN trainers ON trainers.id = cl.trainer_id "
+            "WHERE cl.client_id=? ORDER BY cl.last_opened_at DESC, cl.created_at DESC",
+            (client_id,),
+        ).fetchall()
 
 
 def list_clients(trainer_id: int):
     with get_conn() as conn:
         return conn.execute(
-            "SELECT * FROM clients WHERE trainer_id=? ORDER BY created_at DESC", (trainer_id,)
+            "SELECT client_id AS id, trainer_id, name, username, custom_name, blocked, created_at "
+            "FROM client_links WHERE trainer_id=? ORDER BY created_at DESC", (trainer_id,)
         ).fetchall()
 
 
@@ -641,7 +788,7 @@ def next_bookings_by_client(trainer_id: int) -> dict:
 def set_client_blocked(trainer_id: int, client_id: int, blocked: bool) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE clients SET blocked=? WHERE id=? AND trainer_id=?",
+            "UPDATE client_links SET blocked=? WHERE client_id=? AND trainer_id=?",
             (1 if blocked else 0, client_id, trainer_id),
         )
         return cur.rowcount > 0
@@ -650,7 +797,7 @@ def set_client_blocked(trainer_id: int, client_id: int, blocked: bool) -> bool:
 def is_client_blocked(trainer_id: int, client_id: int) -> bool:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT blocked FROM clients WHERE id=? AND trainer_id=?", (client_id, trainer_id)
+            "SELECT blocked FROM client_links WHERE client_id=? AND trainer_id=?", (client_id, trainer_id)
         ).fetchone()
     return bool(row["blocked"]) if row else False
 
@@ -658,7 +805,7 @@ def is_client_blocked(trainer_id: int, client_id: int) -> bool:
 def count_clients(trainer_id: int) -> int:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM clients WHERE trainer_id=?", (trainer_id,)
+            "SELECT COUNT(*) AS c FROM client_links WHERE trainer_id=?", (trainer_id,)
         ).fetchone()
     return row["c"] if row else 0
 
@@ -777,14 +924,20 @@ def book_slot(
         return cur.rowcount > 0
 
 
-def set_client_custom_name(client_id: int, custom_name: str | None):
+def set_client_custom_name(client_id: int, trainer_id: int, custom_name: str | None):
     with get_conn() as conn:
-        conn.execute("UPDATE clients SET custom_name=? WHERE id=?", (custom_name, client_id))
+        conn.execute(
+            "UPDATE client_links SET custom_name=? WHERE client_id=? AND trainer_id=?",
+            (custom_name, client_id, trainer_id),
+        )
 
 
-def get_client_custom_name(client_id: int) -> str | None:
+def get_client_custom_name(client_id: int, trainer_id: int) -> str | None:
     with get_conn() as conn:
-        row = conn.execute("SELECT custom_name FROM clients WHERE id=?", (client_id,)).fetchone()
+        row = conn.execute(
+            "SELECT custom_name FROM client_links WHERE client_id=? AND trainer_id=?",
+            (client_id, trainer_id),
+        ).fetchone()
     return row["custom_name"] if row else None
 
 
@@ -910,8 +1063,13 @@ def mark_no_show(slot_id: int) -> bool:
 def list_client_bookings(client_id: int):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT slots.*, trainers.name AS trainer_name, trainers.address AS trainer_address FROM slots "
+            "SELECT slots.*, trainers.name AS trainer_name, "
+            "COALESCE(branches.address, trainers.address) AS trainer_address, "
+            "branches.name AS branch_name "
+            "FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
+            "LEFT JOIN staff ON staff.id = slots.staff_id "
+            "LEFT JOIN branches ON branches.id = staff.branch_id "
             "WHERE client_id=? AND status='booked' AND slot_dt >= ? ORDER BY slot_dt",
             (client_id, now_msk().strftime("%Y-%m-%d %H:%M")),
         ).fetchall()
@@ -924,8 +1082,13 @@ def list_client_past_bookings(client_id: int, limit: int = 10):
     (это была бы чужая история, а не клиента)."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT slots.*, trainers.name AS trainer_name, trainers.address AS trainer_address FROM slots "
+            "SELECT slots.*, trainers.name AS trainer_name, "
+            "COALESCE(branches.address, trainers.address) AS trainer_address, "
+            "branches.name AS branch_name "
+            "FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
+            "LEFT JOIN staff ON staff.id = slots.staff_id "
+            "LEFT JOIN branches ON branches.id = staff.branch_id "
             "WHERE client_id=? AND status='booked' AND slot_dt < ? "
             "ORDER BY slot_dt DESC LIMIT ?",
             (client_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit),

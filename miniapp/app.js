@@ -27,6 +27,7 @@
     schedule: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 3v3M16 3v3"/></svg>',
     services: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M8 7V5.5A2.5 2.5 0 0 1 10.5 3h3A2.5 2.5 0 0 1 16 5.5V7"/><path d="M3 12h18"/></svg>',
     staff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.6 20c0-3.6 2.9-6.5 6.4-6.5s6.4 2.9 6.4 6.5"/><circle cx="17.5" cy="8.8" r="2.3"/><path d="M15.8 13.6c2.7.5 4.8 2.7 4.8 6"/></svg>',
+    branches: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.1-7-11.5A7 7 0 0 1 19 9.5C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.4"/></svg>',
     clients: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8" r="3.2"/><path d="M2 20c0-3.6 2.9-6.5 6.5-6.5S15 16.4 15 20"/><circle cx="17.5" cy="8.8" r="2.3"/><path d="M15.8 13.6c2.7.5 4.8 2.7 4.8 6"/></svg>',
     profile: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.2 14.8a1.6 1.6 0 0 0 .33 1.76l.05.05a1.9 1.9 0 1 1-2.7 2.7l-.05-.05a1.6 1.6 0 0 0-1.76-.33 1.6 1.6 0 0 0-.97 1.47V21a1.9 1.9 0 0 1-3.8 0v-.1a1.6 1.6 0 0 0-1.05-1.47 1.6 1.6 0 0 0-1.76.33l-.05.05a1.9 1.9 0 1 1-2.7-2.7l.05-.05A1.6 1.6 0 0 0 5.1 15a1.6 1.6 0 0 0-1.47-.97H3.5a1.9 1.9 0 0 1 0-3.8h.1A1.6 1.6 0 0 0 5.1 9.2a1.6 1.6 0 0 0-.33-1.76l-.05-.05a1.9 1.9 0 1 1 2.7-2.7l.05.05A1.6 1.6 0 0 0 9.2 4.8a1.6 1.6 0 0 0 .97-1.47V3.2a1.9 1.9 0 0 1 3.8 0v.1a1.6 1.6 0 0 0 .97 1.5 1.6 1.6 0 0 0 1.76-.33l.05-.05a1.9 1.9 0 1 1 2.7 2.7l-.05.05a1.6 1.6 0 0 0-.33 1.76v.03a1.6 1.6 0 0 0 1.47.97h.15a1.9 1.9 0 0 1 0 3.8h-.1a1.6 1.6 0 0 0-1.5.97z"/></svg>',
     book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 3v3M16 3v3"/></svg>',
@@ -208,13 +209,38 @@
     startApp("provider");
   };
 
+  async function viewAsClient(trainerId) {
+    try {
+      CLIENT_HOME = await api(`/api/client/home?trainer_id=${encodeURIComponent(trainerId)}`, { method: "GET" });
+    } catch (e) { showToast("Не получилось открыть"); return; }
+    startApp("client");
+  }
+
+  function updateBackToProviderPill() {
+    let pill = document.querySelector(".back-pill");
+    if (ROLE === "client" && PROVIDER) {
+      if (!pill) {
+        pill = document.createElement("button");
+        pill.className = "back-pill";
+        document.body.appendChild(pill);
+      }
+      pill.textContent = "← Кабинет специалиста";
+      pill.hidden = false;
+      pill.onclick = () => startApp("provider");
+    } else if (pill) {
+      pill.hidden = true;
+    }
+  }
+
   function startApp(role) {
     ROLE = role;
     el("screen-app").hidden = false;
+    updateBackToProviderPill();
     const tabs = role === "provider"
       ? [
           { id: "schedule", icon: "schedule", label: "Расписание" },
           { id: "services", icon: "services", label: "Услуги" },
+          ...(PROVIDER.is_business ? [{ id: "branches", icon: "branches", label: "Филиалы" }] : []),
           ...(PROVIDER.is_business ? [{ id: "staff", icon: "staff", label: "Сотрудники" }] : []),
           { id: "clients", icon: "clients", label: "Клиенты" },
           { id: "profile", icon: "profile", label: "Профиль" },
@@ -240,6 +266,7 @@
     if (ROLE === "provider") {
       if (tab === "schedule") renderProviderSchedule();
       if (tab === "services") renderProviderServices();
+      if (tab === "branches") renderProviderBranches();
       if (tab === "staff") renderProviderStaff();
       if (tab === "clients") renderProviderClients();
       if (tab === "profile") renderProviderProfile();
@@ -668,6 +695,88 @@
     }
   }
 
+  async function renderProviderBranches() {
+    setHeader("Филиалы", PROVIDER.name);
+    hideFab();
+    const content = el("content");
+    content.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
+    let data;
+    try {
+      data = await api("/api/provider/branches", { method: "GET" });
+    } catch (e) {
+      content.innerHTML = '<div class="empty-state"><div class="empty-text">Не удалось загрузить филиалы</div></div>';
+      return;
+    }
+    PROVIDER.branches = data.branches;
+    if (!data.branches.length) {
+      content.innerHTML = '<div class="empty-state"><div class="empty-emoji">📍</div><div class="empty-title">Пока нет филиалов</div>' +
+        '<div class="empty-text">Если у тебя сеть — добавь филиалы с адресами кнопкой снизу справа, и клиент сначала будет выбирать, куда ему удобнее.</div></div>';
+    } else {
+      let html = '<div class="card">';
+      data.branches.forEach((b) => {
+        html += `<div class="list-item" data-branch="${b.id}">
+          <div class="list-item-main">
+            <div class="list-item-title">${escapeHtml(b.name)}</div>
+            <div class="list-item-sub">${escapeHtml(b.address || "Без адреса")}</div>
+          </div>
+          <span class="badge">Изменить</span>
+        </div>`;
+      });
+      html += "</div>";
+      content.innerHTML = html;
+      content.querySelectorAll("[data-branch]").forEach((row) => {
+        const branch = data.branches.find((b) => String(b.id) === row.dataset.branch);
+        row.onclick = () => openBranchSheet(branch);
+      });
+    }
+    renderFab(() => openBranchSheet(null));
+  }
+
+  function openBranchSheet(branch) {
+    const isEdit = !!branch;
+    openSheet(`
+      <div class="sheet-title">${isEdit ? "Изменить филиал" : "Новый филиал"}</div>
+      <div class="field">
+        <label class="field-label">Название</label>
+        <input class="input" id="branch-name" type="text" maxlength="80" value="${isEdit ? escapeHtml(branch.name) : ""}" placeholder="Например: на Ленина" />
+      </div>
+      <div class="field">
+        <label class="field-label">Адрес</label>
+        <input class="input" id="branch-address" type="text" maxlength="200" value="${isEdit ? escapeHtml(branch.address || "") : ""}" placeholder="ул. Ленина, 10" />
+      </div>
+      <button class="btn btn-primary btn-block" id="branch-submit" style="margin-bottom:10px">Сохранить</button>
+      ${isEdit ? '<button class="btn btn-danger btn-block" id="branch-delete">Удалить филиал</button>' : ""}
+    `);
+
+    el("branch-submit").onclick = async () => {
+      const name = el("branch-name").value.trim();
+      const address = el("branch-address").value.trim();
+      if (!name) { showToast("Укажи название"); return; }
+      try {
+        if (isEdit) {
+          await api("/api/provider/branches/update", { method: "POST", body: JSON.stringify({ id: branch.id, name, address }) });
+        } else {
+          await api("/api/provider/branches/add", { method: "POST", body: JSON.stringify({ name, address }) });
+        }
+        closeSheet();
+        haptic("success");
+        renderProviderBranches();
+      } catch (e) { showToast("Не получилось сохранить"); }
+    };
+
+    if (isEdit) {
+      el("branch-delete").onclick = () => {
+        showConfirm("Удалить филиал? Сотрудники этого филиала останутся без привязки к филиалу.", async () => {
+          try {
+            await api("/api/provider/branches/delete", { method: "POST", body: JSON.stringify({ id: branch.id }) });
+            closeSheet();
+            renderProviderBranches();
+          } catch (e) { showToast("Не получилось удалить"); }
+        });
+      };
+    }
+  }
+
   async function renderProviderStaff() {
     setHeader("Сотрудники", PROVIDER.name);
     hideFab();
@@ -675,21 +784,32 @@
     content.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
     let data;
     try {
-      data = await api("/api/provider/staff", { method: "GET" });
+      const calls = [api("/api/provider/staff", { method: "GET" })];
+      if (PROVIDER.is_business) calls.push(api("/api/provider/branches", { method: "GET" }));
+      const results = await Promise.all(calls);
+      data = results[0];
+      if (results[1]) PROVIDER.branches = results[1].branches;
     } catch (e) {
       content.innerHTML = '<div class="empty-state"><div class="empty-text">Не удалось загрузить сотрудников</div></div>';
       return;
     }
     PROVIDER.staff = data.staff;
+    const branchName = (branchId) => {
+      if (!branchId || !PROVIDER.branches) return "";
+      const b = PROVIDER.branches.find((x) => String(x.id) === String(branchId));
+      return b ? b.name : "";
+    };
     if (!data.staff.length) {
       content.innerHTML = '<div class="empty-state"><div class="empty-emoji">🧑‍🤝‍🧑</div><div class="empty-title">Пока нет сотрудников</div>' +
         '<div class="empty-text">Добавь первого сотрудника кнопкой снизу справа.</div></div>';
     } else {
       let html = '<div class="card">';
       data.staff.forEach((s) => {
+        const bn = branchName(s.branch_id);
         html += `<div class="list-item" data-staff="${s.id}">
           <div class="list-item-main">
             <div class="list-item-title">${escapeHtml(s.name)}</div>
+            ${bn ? `<div class="list-item-sub">📍 ${escapeHtml(bn)}</div>` : ""}
           </div>
           <span class="badge">Изменить</span>
         </div>`;
@@ -706,12 +826,23 @@
 
   function openStaffSheet(staff) {
     const isEdit = !!staff;
+    const branches = (PROVIDER.branches || []).filter((b) => b.active !== 0);
+    const showBranchSelect = PROVIDER.is_business && branches.length > 0;
+    let branchOptions = '<option value="">Без филиала</option>';
+    branches.forEach((b) => {
+      const selected = isEdit && String(staff.branch_id || "") === String(b.id) ? " selected" : "";
+      branchOptions += `<option value="${b.id}"${selected}>${escapeHtml(b.name)}</option>`;
+    });
     openSheet(`
       <div class="sheet-title">${isEdit ? "Изменить сотрудника" : "Новый сотрудник"}</div>
       <div class="field">
         <label class="field-label">Имя</label>
         <input class="input" id="staff-name" type="text" maxlength="80" value="${isEdit ? escapeHtml(staff.name) : ""}" placeholder="Например: Мария" />
       </div>
+      ${showBranchSelect ? `<div class="field">
+        <label class="field-label">Филиал</label>
+        <select class="input" id="staff-branch">${branchOptions}</select>
+      </div>` : ""}
       <button class="btn btn-primary btn-block" id="staff-submit" style="margin-bottom:10px">Сохранить</button>
       ${isEdit ? '<button class="btn btn-danger btn-block" id="staff-delete">Удалить сотрудника</button>' : ""}
     `);
@@ -719,11 +850,17 @@
     el("staff-submit").onclick = async () => {
       const name = el("staff-name").value.trim();
       if (!name) { showToast("Укажи имя"); return; }
+      const body = { name };
+      if (showBranchSelect) {
+        const bv = el("staff-branch").value;
+        body.branch_id = bv || null;
+      }
       try {
         if (isEdit) {
-          await api("/api/provider/staff/update", { method: "POST", body: JSON.stringify({ id: staff.id, name }) });
+          body.id = staff.id;
+          await api("/api/provider/staff/update", { method: "POST", body: JSON.stringify(body) });
         } else {
-          await api("/api/provider/staff/add", { method: "POST", body: JSON.stringify({ name }) });
+          await api("/api/provider/staff/add", { method: "POST", body: JSON.stringify(body) });
         }
         closeSheet();
         haptic("success");
@@ -891,6 +1028,14 @@
         <div class="card-title">Отзывы</div>
         <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
       </div>
+      ${PROVIDER.client_links && PROVIDER.client_links.length ? `
+      <div class="card">
+        <div class="card-title">Ты также клиент</div>
+        <p class="muted" style="margin-bottom:10px">Этим же Telegram-аккаунтом ты записан(а) как клиент здесь:</p>
+        ${PROVIDER.client_links.map((l) => `
+          <button class="btn btn-secondary btn-block" data-view-client="${l.id}" style="margin-bottom:8px">Открыть как клиент — ${escapeHtml(l.name)}</button>
+        `).join("")}
+      </div>` : ""}
     `;
     el("pf-save").onclick = async () => {
       const name = el("pf-name").value.trim();
@@ -912,6 +1057,9 @@
         setHeader("Профиль", "");
       } catch (e) { showToast("Не получилось сохранить"); }
     };
+    content.querySelectorAll("[data-view-client]").forEach((btn) => {
+      btn.onclick = () => viewAsClient(btn.dataset.viewClient);
+    });
     el("pf-copy").onclick = () => {
       const input = el("pf-link");
       input.select();
@@ -1136,6 +1284,7 @@
 
   let selectedServiceId = null;
   let selectedStaffId = null;
+  let selectedBranchId = null;
   let selectedDate = null;
   let STAFF_DAYS = [];
   let PRESET_STAFF_ID = null;   // выставляется кнопкой «Повторить» из истории записей
@@ -1160,6 +1309,12 @@
     PRESET_SERVICE_ID = null;
 
     let html = "";
+    if (!rescheduling && CLIENT_HOME.other_businesses && CLIENT_HOME.other_businesses.length) {
+      html += `<div class="section-label">Специалист</div><div class="chips" id="business-switch-chips">` +
+        `<button class="chip active" data-biz="${CLIENT_HOME.id}">${escapeHtml(CLIENT_HOME.name)}</button>` +
+        CLIENT_HOME.other_businesses.map((b) => `<button class="chip" data-biz="${b.id}">${escapeHtml(b.name)}</button>`).join("") +
+        `</div>`;
+    }
     if (rescheduling) {
       html += `<div class="card" style="margin-bottom:2px">
         <p class="muted" style="margin:0">🔄 Выбери новое время — старая запись освободится автоматически.</p>
@@ -1176,7 +1331,30 @@
       selectedServiceId = presetServiceId || CLIENT_HOME.services[0].id;
     }
 
-    const staffList = CLIENT_HOME.staff || [];
+    const allStaff = CLIENT_HOME.staff || [];
+    const branches = CLIENT_HOME.branches || [];
+    const presetStaffBranch = presetStaffId ? (allStaff.find((s) => String(s.id) === String(presetStaffId)) || {}).branch_id : null;
+    if (branches.length > 1) {
+      const branchStillValid = selectedBranchId && branches.some((b) => String(b.id) === String(selectedBranchId));
+      if (presetStaffBranch) {
+        selectedBranchId = presetStaffBranch;
+      } else if (!branchStillValid) {
+        selectedBranchId = branches[0].id;
+      }
+      html += `<div class="section-label">Филиал</div><div class="chips" id="branch-chips">`;
+      branches.forEach((b) => {
+        const isActive = String(b.id) === String(selectedBranchId);
+        html += `<button class="chip${isActive ? " active" : ""}" data-branch="${b.id}">${escapeHtml(b.name)}</button>`;
+      });
+      html += "</div>";
+    } else {
+      selectedBranchId = null;
+    }
+
+    const staffList = branches.length > 1
+      ? allStaff.filter((s) => String(s.branch_id || "") === String(selectedBranchId))
+      : allStaff;
+
     if (!staffList.length) {
       html += `<div class="empty-state"><div class="empty-emoji">🗓</div><div class="empty-title">Пока нет доступных мастеров</div>` +
         `<div class="empty-text">Загляни чуть позже.</div></div>`;
@@ -1216,6 +1394,17 @@
     content.innerHTML = html;
     selectedStaffId = staffExists ? presetStaffId : staffList[0].id;
 
+    if (el("business-switch-chips")) {
+      Array.from(el("business-switch-chips").children).forEach((c) => c.onclick = async () => {
+        if (c.classList.contains("active")) return;
+        const bizId = c.dataset.biz;
+        CLIENT_HOME = await api(`/api/client/home?trainer_id=${encodeURIComponent(bizId)}`, { method: "GET" });
+        ENTERED_CLIENT_NAME = null;
+        selectedBranchId = null;
+        renderClientBook();
+      });
+    }
+
     if (el("resch-cancel-mode")) {
       el("resch-cancel-mode").onclick = () => {
         RESCHEDULE_SLOT_ID = null;
@@ -1251,6 +1440,14 @@
         c.classList.add("active");
         selectedStaffId = c.dataset.staff;
         loadStaffSchedule();
+      });
+    }
+
+    if (el("branch-chips")) {
+      Array.from(el("branch-chips").children).forEach((c) => c.onclick = () => {
+        if (c.classList.contains("active")) return;
+        selectedBranchId = c.dataset.branch;
+        renderClientBook();
       });
     }
 
@@ -1426,7 +1623,7 @@
           <div class="list-item-main">
             <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
             <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}${b.discount_label ? " · 🏷 " + escapeHtml(b.discount_label) : ""}</div>
-            ${b.trainer_address ? `<div class="list-item-sub" style="margin-top:2px">📍 ${escapeHtml(b.trainer_address)}</div>` : ""}
+            ${b.trainer_address ? `<div class="list-item-sub" style="margin-top:2px">📍 ${b.branch_name ? escapeHtml(b.branch_name) + " · " : ""}${escapeHtml(b.trainer_address)}</div>` : ""}
           </div>
           <div style="display:flex;gap:6px;flex:0 0 auto">
             <button class="btn btn-sm btn-secondary" data-reschedule="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">📅</button>

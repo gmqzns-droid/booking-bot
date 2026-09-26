@@ -118,7 +118,15 @@ def service_to_dict(row) -> dict:
 
 
 def staff_to_dict(row) -> dict:
-    return {"id": row["id"], "name": row["name"]}
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "branch_id": row["branch_id"] if "branch_id" in row.keys() else None,
+    }
+
+
+def branch_to_dict(row) -> dict:
+    return {"id": row["id"], "name": row["name"], "address": row["address"]}
 
 
 def promo_discount_label(promo) -> str:
@@ -155,6 +163,7 @@ def trainer_public_dict(trainer) -> dict:
         "terms": terms,
         "services": [service_to_dict(s) for s in db.list_services(trainer["id"])],
         "staff": [staff_to_dict(s) for s in db.list_staff(trainer["id"])],
+        "branches": [branch_to_dict(b) for b in db.list_branches(trainer["id"])],
     }
 
 
@@ -215,6 +224,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         uid = user["id"]
         trainer = db.get_trainer(uid)
         if trainer:
+            client_links = db.list_client_links(uid)
             return web.json_response({
                 "role": "provider",
                 "provider": {
@@ -227,6 +237,12 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                     "terms": terminology.terms_for(trainer["category_key"]),
                     "link": f"https://t.me/{bot_username}?start={trainer['id']}",
                     "staff": [staff_to_dict(s) for s in db.list_staff(trainer["id"])],
+                    "branches": [branch_to_dict(b) for b in db.list_branches(trainer["id"])],
+                    # Тот же человек в Telegram мог отдельно записаться как клиент к другому
+                    # специалисту на сервисе — не прячем это, а даём переключиться в профиле.
+                    "client_links": [
+                        {"id": link["trainer_id"], "name": link["trainer_name"]} for link in client_links
+                    ],
                 },
             })
         client_trainer_id = db.get_client_trainer(uid)
@@ -333,6 +349,56 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         db.delete_service(service["id"])
         return web.json_response({"ok": True})
 
+    # ---------- филиалы (сеть у бизнес-аккаунта — необязательно) ----------
+
+    @require_auth
+    async def handle_branches_list(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        branches = [branch_to_dict(b) for b in db.list_branches(user["id"])]
+        return web.json_response({"branches": branches})
+
+    @require_auth
+    async def handle_branches_add(request: web.Request, user: dict) -> web.Response:
+        trainer = db.get_trainer(user["id"])
+        if not trainer or not trainer["is_business"]:
+            return web.json_response({"error": "not a business"}, status=403)
+        body = await request.json()
+        name = (body.get("name") or "").strip()[:80]
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        address = (body.get("address") or "").strip()[:200] or None
+        bid = db.add_branch(user["id"], name, address)
+        return web.json_response({"ok": True, "id": bid})
+
+    @require_auth
+    async def handle_branches_update(request: web.Request, user: dict) -> web.Response:
+        trainer = db.get_trainer(user["id"])
+        if not trainer or not trainer["is_business"]:
+            return web.json_response({"error": "not a business"}, status=403)
+        body = await request.json()
+        branch = db.get_branch(int(body.get("id", 0)))
+        if not branch or branch["business_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        name = (body.get("name") or "").strip()[:80]
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        address = (body.get("address") or "").strip()[:200] or None
+        db.update_branch(branch["id"], name=name, address=address)
+        return web.json_response({"ok": True})
+
+    @require_auth
+    async def handle_branches_delete(request: web.Request, user: dict) -> web.Response:
+        trainer = db.get_trainer(user["id"])
+        if not trainer or not trainer["is_business"]:
+            return web.json_response({"error": "not a business"}, status=403)
+        body = await request.json()
+        branch = db.get_branch(int(body.get("id", 0)))
+        if not branch or branch["business_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        db.delete_branch(branch["id"])
+        return web.json_response({"ok": True})
+
     # ---------- сотрудники (только для бизнес-аккаунтов) ----------
 
     @require_auth
@@ -341,6 +407,20 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             return web.json_response({"error": "not a provider"}, status=403)
         staff = [staff_to_dict(s) for s in db.list_staff(user["id"])]
         return web.json_response({"staff": staff})
+
+    def _parse_branch_id(business_id: int, raw) -> tuple[bool, int | None]:
+        """Возвращает (ok, branch_id). raw пустой/None -> (True, None) — без филиала;
+        иначе id обязан принадлежать этому бизнесу."""
+        if raw in (None, ""):
+            return True, None
+        try:
+            branch_id = int(raw)
+        except (TypeError, ValueError):
+            return False, None
+        branch = db.get_branch(branch_id)
+        if not branch or branch["business_id"] != business_id:
+            return False, None
+        return True, branch_id
 
     @require_auth
     async def handle_staff_add(request: web.Request, user: dict) -> web.Response:
@@ -351,7 +431,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         name = (body.get("name") or "").strip()[:80]
         if not name:
             return web.json_response({"error": "name required"}, status=400)
-        sid = db.add_staff(user["id"], name)
+        ok, branch_id = _parse_branch_id(user["id"], body.get("branch_id"))
+        if not ok:
+            return web.json_response({"error": "bad branch_id"}, status=400)
+        sid = db.add_staff(user["id"], name, branch_id=branch_id)
         return web.json_response({"ok": True, "id": sid})
 
     @require_auth
@@ -366,7 +449,13 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         name = (body.get("name") or "").strip()[:80]
         if not name:
             return web.json_response({"error": "name required"}, status=400)
-        db.update_staff(staff["id"], name=name)
+        # branch_id меняем только если ключ явно передан — иначе не трогаем текущую привязку.
+        branch_id = db.UNSET
+        if "branch_id" in body:
+            ok, branch_id = _parse_branch_id(user["id"], body.get("branch_id"))
+            if not ok:
+                return web.json_response({"error": "bad branch_id"}, status=400)
+        db.update_staff(staff["id"], name=name, branch_id=branch_id)
         return web.json_response({"ok": True})
 
     @require_auth
@@ -768,15 +857,38 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
 
     @require_auth
     async def handle_client_home(request: web.Request, user: dict) -> web.Response:
-        trainer_id = db.get_client_trainer(user["id"])
-        trainer = db.get_trainer(trainer_id) if trainer_id else None
+        # Клиент может быть привязан сразу к нескольким специалистам, использующим сервис —
+        # по умолчанию показываем того, чью связь открывали последней; ?trainer_id=
+        # позволяет явно переключиться на другого (используется переключателем в приложении).
+        links = db.list_client_links(user["id"])
+        if not links:
+            return web.json_response({"error": "no trainer"}, status=404)
+        trainer_id = None
+        requested_raw = request.query.get("trainer_id")
+        if requested_raw:
+            try:
+                requested_id = int(requested_raw)
+            except ValueError:
+                requested_id = None
+            if requested_id and any(link["trainer_id"] == requested_id for link in links):
+                db.touch_client_link(user["id"], requested_id)
+                trainer_id = requested_id
+                links = db.list_client_links(user["id"])  # обновляем порядок после touch
+        if trainer_id is None:
+            trainer_id = links[0]["trainer_id"]  # последняя открытая связь
+        trainer = db.get_trainer(trainer_id)
         if not trainer:
             return web.json_response({"error": "no trainer"}, status=404)
         # Дни/слоты сюда не включаем — они запрашиваются отдельно для конкретного
         # сотрудника через /api/client/staff_schedule, после того как клиент его выберет
         # (при одном сотруднике — соло-специалист — фронтенд выберет его сам, без показа выбора).
         data = trainer_public_dict(trainer)
-        data["own_name"] = db.get_client_custom_name(user["id"])
+        data["own_name"] = db.get_client_custom_name(user["id"], trainer_id)
+        if len(links) > 1:
+            data["other_businesses"] = [
+                {"id": link["trainer_id"], "name": link["trainer_name"]}
+                for link in links if link["trainer_id"] != trainer_id
+            ]
         return web.json_response(data)
 
     @require_auth
@@ -888,7 +1000,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         )
         if not ok:
             return web.json_response({"error": "slot taken"}, status=409)
-        db.set_client_custom_name(user["id"], custom_name)
+        db.set_client_custom_name(user["id"], slot_pre["trainer_id"], custom_name)
 
         discount_label = None
         if promo:
@@ -1028,6 +1140,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return {
             "id": r["id"], "slot_dt": r["slot_dt"], "trainer_name": r["trainer_name"],
             "trainer_address": r["trainer_address"] if "trainer_address" in r.keys() else None,
+            "branch_name": r["branch_name"] if "branch_name" in r.keys() else None,
             "service_id": r["service_id"] if "service_id" in r.keys() else None,
             "service_name": r["service_name"] if "service_name" in r.keys() else None,
             "staff_id": r["staff_id"] if "staff_id" in r.keys() else None,
@@ -1067,6 +1180,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/services/add", handle_services_add)
     app.router.add_post("/api/provider/services/update", handle_services_update)
     app.router.add_post("/api/provider/services/delete", handle_services_delete)
+    app.router.add_get("/api/provider/branches", handle_branches_list)
+    app.router.add_post("/api/provider/branches/add", handle_branches_add)
+    app.router.add_post("/api/provider/branches/update", handle_branches_update)
+    app.router.add_post("/api/provider/branches/delete", handle_branches_delete)
     app.router.add_get("/api/provider/staff", handle_staff_list)
     app.router.add_post("/api/provider/staff/add", handle_staff_add)
     app.router.add_post("/api/provider/staff/update", handle_staff_update)
