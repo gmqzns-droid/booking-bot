@@ -1152,6 +1152,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return {
             "id": r["id"], "slot_dt": r["slot_dt"], "trainer_name": r["trainer_name"],
             "trainer_address": r["trainer_address"] if "trainer_address" in r.keys() else None,
+            "trainer_phone": r["trainer_phone"] if "trainer_phone" in r.keys() else None,
             "branch_name": r["branch_name"] if "branch_name" in r.keys() else None,
             "service_id": r["service_id"] if "service_id" in r.keys() else None,
             "service_name": r["service_name"] if "service_name" in r.keys() else None,
