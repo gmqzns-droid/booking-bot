@@ -238,6 +238,7 @@ def init_db():
         _ensure_column(conn, "trainers", "phone", "TEXT")
         _ensure_column(conn, "branches", "phone", "TEXT")
         _ensure_column(conn, "slots", "regular_id", "INTEGER")
+        _ensure_column(conn, "slots", "group_id", "TEXT")
 
         # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
         # специалист одновременно, вторая привязка тихо затирала первую). Переносим
@@ -255,11 +256,19 @@ def init_db():
 
         # У слотов, заведённых до появления сотрудников, уникальный индекс был на
         # (trainer_id, slot_dt) — теперь то же самое время может быть свободно у РАЗНЫХ
-        # сотрудников одного бизнеса, поэтому индекс должен учитывать staff_id.
+        # сотрудников одного бизнеса, поэтому индекс должен учитывать staff_id. А с
+        # появлением групповых занятий (group_id) уникальность по времени действует
+        # только для ОДИНОЧНЫХ слотов (group_id IS NULL) — у группового занятия на одно
+        # и то же время намеренно стоит несколько строк-"мест" с одинаковым slot_dt,
+        # их индекс не должен трогать. Индекс дропается и пересоздаётся при каждом
+        # старте (а не только "IF NOT EXISTS"), иначе на уже существующей базе старое
+        # (не partial) определение индекса так и останется, потому что одноимённый
+        # индекс SQLite повторно не создаёт.
         conn.execute("DROP INDEX IF EXISTS idx_trainer_slot")
+        conn.execute("DROP INDEX IF EXISTS idx_trainer_staff_slot")
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_staff_slot "
-            "ON slots(trainer_id, staff_id, slot_dt)"
+            "CREATE UNIQUE INDEX idx_trainer_staff_slot "
+            "ON slots(trainer_id, staff_id, slot_dt) WHERE group_id IS NULL"
         )
 
 
@@ -998,7 +1007,23 @@ def book_existing_regular_slots(regular_id: int, client_id: int, client_name: st
 
 # ---------- Слоты ----------
 
+def _slot_time_taken(trainer_id: int, staff_id: int, slot_dt: str) -> bool:
+    """Совпадает по смыслу со старым (не partial) уникальным индексом: время у этого
+    сотрудника считается занятым, если по нему уже есть ЛЮБАЯ строка (в т.ч. отменённая
+    — так было и раньше). Отдельно нужна, потому что сам индекс теперь partial (действует
+    только на одиночные слоты, group_id IS NULL) и сам по себе не поймает конфликт
+    "одиночный слот встык с уже существующим групповым на то же время" и наоборот."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM slots WHERE trainer_id=? AND staff_id=? AND slot_dt=? LIMIT 1",
+            (trainer_id, staff_id, slot_dt),
+        ).fetchone()
+    return row is not None
+
+
 def add_slot(trainer_id: int, staff_id: int, staff_name: str, slot_dt: str) -> bool:
+    if _slot_time_taken(trainer_id, staff_id, slot_dt):
+        return False
     try:
         with get_conn() as conn:
             conn.execute(
@@ -1009,6 +1034,28 @@ def add_slot(trainer_id: int, staff_id: int, staff_name: str, slot_dt: str) -> b
         return True
     except sqlite3.IntegrityError:
         return False
+
+
+def add_group_slot(trainer_id: int, staff_id: int, staff_name: str, slot_dt: str, capacity: int) -> bool:
+    """Групповое занятие: вместо одного слота создаёт `capacity` "мест" на одно и то же
+    время. Технически каждое место — обычная строка в slots (бронируется, отменяется,
+    шлёт напоминания, считается в статистику и т.д. как всегда, без единого изменения
+    в остальном коде), но все места одного занятия помечены общим group_id — по нему
+    интерфейс схлопывает их в одну строку "18:00 — 3/5 мест" вместо списка одинаковых
+    времён. capacity < 2 — не групповое, просто обычный слот."""
+    if capacity < 2:
+        return add_slot(trainer_id, staff_id, staff_name, slot_dt)
+    if _slot_time_taken(trainer_id, staff_id, slot_dt):
+        return False
+    group_id = secrets.token_hex(6)
+    with get_conn() as conn:
+        for _ in range(capacity):
+            conn.execute(
+                "INSERT INTO slots (trainer_id, staff_id, staff_name, slot_dt, status, group_id, created_at) "
+                "VALUES (?, ?, ?, ?, 'free', ?, ?)",
+                (trainer_id, staff_id, staff_name, slot_dt, group_id, now_msk().isoformat()),
+            )
+    return True
 
 
 def list_free_days(trainer_id: int, staff_id: int, limit_days: int = 14):
@@ -1141,13 +1188,17 @@ def set_trainer_phone(trainer_id: int, phone: str | None):
 
 
 def find_overlapping_booked_slot(
-    trainer_id: int, staff_id: int, slot_dt: str, duration_min: int | None, exclude_slot_id: int | None = None
+    trainer_id: int, staff_id: int, slot_dt: str, duration_min: int | None,
+    exclude_slot_id: int | None = None, exclude_group_id: str | None = None,
 ):
     """Ищет уже забронированный слот того же сотрудника, чьё время пересекается с окном
     [slot_dt, slot_dt+duration_min). Слоты расставляет мастер вручную как отдельные точки
     времени, а не сеткой по длительности услуги — поэтому если услуга длинная (например 60 мин),
     а слоты стоят через 30, эта проверка не даёт забронировать два визита, которые физически
-    наложатся друг на друга. Услуга без указанной длительности не блокирует соседей (как раньше)."""
+    наложатся друг на друга. Услуга без указанной длительности не блокирует соседей (как раньше).
+
+    exclude_group_id: другие "места" ТОГО ЖЕ группового занятия (тот же group_id) — это не
+    конфликт, а ожидаемая одновременность, поэтому они всегда исключаются из проверки."""
     if not duration_min:
         return None
     start = datetime.strptime(slot_dt, "%Y-%m-%d %H:%M")
@@ -1164,6 +1215,9 @@ def find_overlapping_booked_slot(
         ).fetchall()
     for r in rows:
         if exclude_slot_id and r["id"] == exclude_slot_id:
+            continue
+        r_group_id = r["group_id"] if "group_id" in r.keys() else None
+        if exclude_group_id and r_group_id and r_group_id == exclude_group_id:
             continue
         other_start = datetime.strptime(r["slot_dt"], "%Y-%m-%d %H:%M")
         other_duration = r["svc_duration"] or 0
@@ -1260,11 +1314,12 @@ def list_client_bookings(client_id: int):
             "SELECT slots.*, trainers.name AS trainer_name, "
             "COALESCE(branches.address, trainers.address) AS trainer_address, "
             "COALESCE(branches.phone, trainers.phone) AS trainer_phone, "
-            "branches.name AS branch_name "
+            "branches.name AS branch_name, services.duration_min AS service_duration_min "
             "FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
             "LEFT JOIN staff ON staff.id = slots.staff_id "
             "LEFT JOIN branches ON branches.id = staff.branch_id "
+            "LEFT JOIN services ON services.id = slots.service_id "
             "WHERE client_id=? AND status='booked' AND slot_dt >= ? ORDER BY slot_dt",
             (client_id, now_msk().strftime("%Y-%m-%d %H:%M")),
         ).fetchall()
@@ -1280,11 +1335,12 @@ def list_client_past_bookings(client_id: int, limit: int = 10):
             "SELECT slots.*, trainers.name AS trainer_name, "
             "COALESCE(branches.address, trainers.address) AS trainer_address, "
             "COALESCE(branches.phone, trainers.phone) AS trainer_phone, "
-            "branches.name AS branch_name "
+            "branches.name AS branch_name, services.duration_min AS service_duration_min "
             "FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
             "LEFT JOIN staff ON staff.id = slots.staff_id "
             "LEFT JOIN branches ON branches.id = staff.branch_id "
+            "LEFT JOIN services ON services.id = slots.service_id "
             "WHERE client_id=? AND status='booked' AND slot_dt < ? "
             "ORDER BY slot_dt DESC LIMIT ?",
             (client_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit),

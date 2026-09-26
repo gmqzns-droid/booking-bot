@@ -7,6 +7,14 @@
   const DAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
   const MONTHS_RU = ["", "янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 
+  // Русское склонение по числу: plural(5, "место","места","мест") -> "мест"
+  function plural(n, one, few, many) {
+    const mod10 = n % 10, mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+    return many;
+  }
+
   let ROLE = null;         // "provider" | "client" | "guest"
   let PROVIDER = null;     // {id, name, category, terms, link, is_business, staff} — если роль provider
   let CLIENT_HOME = null;  // ответ /api/client/home — если роль client
@@ -33,6 +41,72 @@
     book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 3v3M16 3v3"/></svg>',
     my: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
   };
+
+  // ---------- экспорт события в календарь (.ics) ----------
+  // Полностью на клиенте, без обращений к серверу: собираем стандартный .ics-файл из
+  // уже загруженных данных о записи и отдаём браузеру на скачивание — так его можно
+  // открыть в Google/Apple Calendar и т.п. Время у нас всегда московское (МСК, UTC+3,
+  // без перехода на летнее/зимнее), поэтому просто пересчитываем в UTC вычитанием 3 часов.
+
+  function pad2(n) { return String(n).padStart(2, "0"); }
+
+  function icsUtcStamp(slotDt, addMinutes) {
+    const [datePart, timePart] = slotDt.split(" ");
+    const [y, m, d] = datePart.split("-").map(Number);
+    const [hh, mm] = timePart.split(":").map(Number);
+    let utcMs = Date.UTC(y, m - 1, d, hh - 3, mm, 0);
+    if (addMinutes) utcMs += addMinutes * 60000;
+    const dt = new Date(utcMs);
+    return `${dt.getUTCFullYear()}${pad2(dt.getUTCMonth() + 1)}${pad2(dt.getUTCDate())}T${pad2(dt.getUTCHours())}${pad2(dt.getUTCMinutes())}00Z`;
+  }
+
+  function icsNowStamp() {
+    const dt = new Date();
+    return `${dt.getUTCFullYear()}${pad2(dt.getUTCMonth() + 1)}${pad2(dt.getUTCDate())}T${pad2(dt.getUTCHours())}${pad2(dt.getUTCMinutes())}${pad2(dt.getUTCSeconds())}Z`;
+  }
+
+  function icsEscape(text) {
+    return String(text || "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
+  }
+
+  function buildIcs({ title, description, location, slotDt, durationMin }) {
+    const start = icsUtcStamp(slotDt, 0);
+    const end = icsUtcStamp(slotDt, durationMin || 60);
+    const uid = `${slotDt.replace(/[^0-9]/g, "")}-${Math.random().toString(36).slice(2)}@zapishis`;
+    return [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Zapishis//Booking//RU",
+      "CALSCALE:GREGORIAN",
+      "BEGIN:VEVENT",
+      `UID:${uid}`,
+      `DTSTAMP:${icsNowStamp()}`,
+      `DTSTART:${start}`,
+      `DTEND:${end}`,
+      `SUMMARY:${icsEscape(title)}`,
+      description ? `DESCRIPTION:${icsEscape(description)}` : "",
+      location ? `LOCATION:${icsEscape(location)}` : "",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].filter(Boolean).join("\r\n");
+  }
+
+  function downloadIcs(filename, icsText) {
+    try {
+      const blob = new Blob([icsText], { type: "text/calendar;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      showToast("Файл календаря сохранён");
+    } catch (e) {
+      showToast("Не получилось создать файл календаря");
+    }
+  }
 
   function fmtDay(dateStr) {
     const [y, m, d] = dateStr.split("-").map(Number);
@@ -343,13 +417,33 @@
       html += "</div>";
     }
 
+    const groupSeatsById = {};
+
     if (!dates.length) {
       html += '<div class="empty-state"><div class="empty-emoji">🗓</div><div class="empty-title">Пока пусто</div>' +
         '<div class="empty-text">Добавь время кнопкой снизу справа.</div></div>';
     } else {
       dates.forEach((date) => {
         html += `<div class="section-label">${escapeHtml(fmtDay(date))}</div><div class="card">`;
-        byDate[date].sort((a, b) => a.time.localeCompare(b.time)).forEach((s) => {
+        const sorted = byDate[date].sort((a, b) => a.time.localeCompare(b.time));
+        const shown = new Set();
+        sorted.forEach((s) => {
+          if (shown.has(s.id)) return;
+          if (s.group_id) {
+            const seats = sorted.filter((x) => x.group_id === s.group_id);
+            seats.forEach((x) => shown.add(x.id));
+            groupSeatsById[s.group_id] = seats;
+            const bookedCount = seats.filter((x) => x.status === "booked").length;
+            html += `<div class="list-item" data-group="${s.group_id}">
+              <div class="list-item-main">
+                <div class="list-item-title">${s.time} · Групповое${s.is_regular ? " 🔁" : ""}</div>
+                <div class="list-item-sub">${bookedCount}/${seats.length} занято</div>
+              </div>
+              <span class="badge">Открыть</span>
+            </div>`;
+            return;
+          }
+          shown.add(s.id);
           const booked = s.status === "booked";
           html += `<div class="list-item" data-slot="${s.id}" data-booked="${booked ? 1 : 0}">
             <div class="list-item-main">
@@ -364,6 +458,10 @@
     }
 
     content.innerHTML = html;
+
+    content.querySelectorAll("[data-group]").forEach((row) => {
+      row.onclick = () => openGroupSlotSheet(groupSeatsById[row.dataset.group]);
+    });
 
     if (el("staff-picker-chips")) {
       Array.from(el("staff-picker-chips").children).forEach((c) => c.onclick = () => {
@@ -413,9 +511,18 @@
     openSheet(`
       <div class="sheet-title">${escapeHtml(fmtDay(slot.date))}, ${slot.time}</div>
       <p class="muted" style="margin-top:-10px">${escapeHtml(clientDisplayName(slot.client_name, slot.client_custom_name))}${slot.service_name ? " · " + escapeHtml(slot.service_name) : ""}</p>
+      <button class="btn btn-secondary btn-block" id="act-ics" style="margin-bottom:8px">📆 В календарь</button>
       <button class="btn btn-secondary btn-block" id="act-reschedule" style="margin-bottom:8px">📅 Перенести</button>
       <button class="btn btn-danger btn-block" id="act-cancel">Отменить запись</button>
     `);
+    el("act-ics").onclick = () => {
+      const ics = buildIcs({
+        title: clientDisplayName(slot.client_name, slot.client_custom_name) + (slot.service_name ? ` — ${slot.service_name}` : ""),
+        slotDt: `${slot.date} ${slot.time}`,
+        durationMin: 60,
+      });
+      downloadIcs(`booking-${slot.date}.ics`, ics);
+    };
     el("act-reschedule").onclick = () => {
       closeSheet();
       openRescheduleSheet(slot.id, `${fmtDay(slot.date)}, ${slot.time}`);
@@ -428,6 +535,63 @@
           haptic("success");
           renderProviderSchedule();
         } catch (e) { showToast("Не получилось"); }
+      });
+    };
+  }
+
+  function openGroupSlotSheet(seats) {
+    if (!seats || !seats.length) return;
+    const first = seats[0];
+    const booked = seats.filter((s) => s.status === "booked");
+    const free = seats.length - booked.length;
+
+    let html = `<div class="sheet-title">${escapeHtml(fmtDay(first.date))}, ${first.time} · Групповое</div>`;
+    html += `<p class="muted" style="margin-top:-10px">${booked.length}/${seats.length} занято${free ? ` · свободно ещё ${free} ${plural(free, "место", "места", "мест")}` : " · мест больше нет"}</p>`;
+
+    if (booked.length) {
+      html += '<div class="card" style="margin-bottom:14px">';
+      booked.forEach((s, i) => {
+        html += `<div class="list-item"${i === 0 ? ' style="border-top:none"' : ""}>
+          <div class="list-item-main">
+            <div class="list-item-title">${escapeHtml(clientDisplayName(s.client_name, s.client_custom_name))}</div>
+            <div class="list-item-sub">${escapeHtml(s.service_name || "Без услуги")}</div>
+          </div>
+          <button class="btn btn-sm btn-danger" data-group-cancel="${s.id}">Убрать</button>
+        </div>`;
+      });
+      html += "</div>";
+    } else {
+      html += '<p class="muted">Пока никто не записался.</p>';
+    }
+
+    html += '<button class="btn btn-danger btn-block" id="group-cancel-all">Отменить всё занятие</button>';
+    openSheet(html);
+
+    el("sheet-card").querySelectorAll("[data-group-cancel]").forEach((btn) => {
+      btn.onclick = () => {
+        const slotId = btn.dataset.groupCancel;
+        showConfirm("Убрать этого участника из занятия? Ему придёт уведомление.", async () => {
+          try {
+            await api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
+            haptic("success");
+            closeSheet();
+            renderProviderSchedule();
+          } catch (e) { showToast("Не получилось"); }
+        });
+      };
+    });
+
+    el("group-cancel-all").onclick = () => {
+      showConfirm(`Отменить всё занятие целиком? Все ${booked.length ? "записавшиеся получат уведомление, а " : ""}места исчезнут.`, async () => {
+        try {
+          await Promise.all(seats.map((s) =>
+            api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: s.id }) })
+          ));
+          haptic("success");
+          showToast("Занятие отменено");
+          closeSheet();
+          renderProviderSchedule();
+        } catch (e) { showToast("Не получилось отменить всё занятие"); }
       });
     };
   }
@@ -560,6 +724,11 @@
         </div>
         <div class="field-hint" style="margin-bottom:14px">Слоты создадутся на 8 недель вперёд.</div>
       </div>
+      <div class="field">
+        <label class="field-label">Мест на это время</label>
+        <input class="input" type="number" id="slot-capacity" min="1" max="100" value="1" />
+        <div class="field-hint">1 — обычная разовая запись. Больше 1 — групповое занятие (например, йога или мастер-класс): на одно время смогут записаться сразу несколько человек.</div>
+      </div>
       <button class="btn btn-primary btn-block" id="slot-submit">Добавить</button>
     `);
 
@@ -576,13 +745,14 @@
 
     el("slot-submit").onclick = async () => {
       const mode = modeChips.find((c) => c.classList.contains("active")).dataset.mode;
+      const capacity = Math.max(1, Math.min(100, Number(el("slot-capacity").value) || 1));
       try {
         if (mode === "single") {
           const date = el("slot-date").value;
           const time = el("slot-time").value;
           if (!date || !time) { showToast("Заполни дату и время"); return; }
           await api("/api/provider/slots/add", {
-            method: "POST", body: JSON.stringify({ slot_dt: `${date} ${time}`, staff_id: CURRENT_STAFF_ID }),
+            method: "POST", body: JSON.stringify({ slot_dt: `${date} ${time}`, staff_id: CURRENT_STAFF_ID, capacity }),
           });
         } else {
           const weekdays = wdChips.filter((c) => c.classList.contains("active")).map((c) => Number(c.dataset.wd));
@@ -590,7 +760,7 @@
           const time = el("recur-time").value;
           const [hh, mm] = time.split(":").map(Number);
           await api("/api/provider/slots/add_recurring", {
-            method: "POST", body: JSON.stringify({ weekdays, hh, mm, staff_id: CURRENT_STAFF_ID }),
+            method: "POST", body: JSON.stringify({ weekdays, hh, mm, staff_id: CURRENT_STAFF_ID, capacity }),
           });
         }
         closeSheet();
@@ -1689,16 +1859,29 @@
     const day = STAFF_DAYS.find((d) => d.date === selectedDate);
     grid.innerHTML = "";
     if (!day) return;
+    // Свободные "места" одного группового занятия — это несколько отдельных слотов с
+    // одинаковым временем и group_id; клиенту показываем их одной кнопкой с количеством
+    // мест, а бронируем любое одно из них (первое) при клике.
+    const shown = new Set();
     day.slots.forEach((s) => {
+      if (shown.has(s.id)) return;
       const btn = document.createElement("button");
       btn.className = "slot-btn";
-      btn.textContent = s.time;
-      btn.onclick = () => confirmBook(s, day.date);
+      if (s.group_id) {
+        const seats = day.slots.filter((x) => x.group_id === s.group_id);
+        seats.forEach((x) => shown.add(x.id));
+        btn.textContent = `${s.time} · ${seats.length} ${plural(seats.length, "место", "места", "мест")}`;
+        btn.onclick = () => confirmBook(s, day.date, seats.length);
+      } else {
+        shown.add(s.id);
+        btn.textContent = s.time;
+        btn.onclick = () => confirmBook(s, day.date);
+      }
       grid.appendChild(btn);
     });
   }
 
-  function confirmBook(slot, date) {
+  function confirmBook(slot, date, groupSeats) {
     if (RESCHEDULE_SLOT_ID) {
       const oldId = RESCHEDULE_SLOT_ID;
       showConfirm(`Перенести запись на ${fmtDay(date)} в ${slot.time}?`, async () => {
@@ -1734,7 +1917,10 @@
     const terms = CLIENT_HOME.terms;
     const svc = CLIENT_HOME.services.find((s) => String(s.id) === String(selectedServiceId));
     const svcLine = svc ? ` (${svc.name})` : "";
-    showConfirm(`Записаться на ${fmtDay(date)} в ${slot.time}${svcLine}?`, async () => {
+    const confirmText = groupSeats
+      ? `Записаться в группу на ${fmtDay(date)} в ${slot.time}${svcLine}?`
+      : `Записаться на ${fmtDay(date)} в ${slot.time}${svcLine}?`;
+    showConfirm(confirmText, async () => {
       try {
         await api("/api/client/book", {
           method: "POST",
@@ -1797,14 +1983,17 @@
       data.bookings.forEach((b) => {
         html += `<div class="list-item">
           <div class="list-item-main">
-            <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}${b.regular_id ? ' <span class="badge">🔁 Абонемент</span>' : ""}</div>
+            <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}${b.regular_id ? ' <span class="badge">🔁 Абонемент</span>' : ""}${b.is_group ? ' <span class="badge">👥 Групповое</span>' : ""}</div>
             <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}${b.discount_label ? " · 🏷 " + escapeHtml(b.discount_label) : ""}</div>
             ${b.trainer_address ? `<div class="list-item-sub" style="margin-top:2px">📍 ${b.branch_name ? escapeHtml(b.branch_name) + " · " : ""}${escapeHtml(b.trainer_address)}</div>` : ""}
             ${b.trainer_phone ? `<div class="list-item-sub" style="margin-top:2px">☎ ${escapeHtml(b.trainer_phone)}</div>` : ""}
-            ${b.regular_id ? `<div style="margin-top:6px"><button class="btn btn-sm btn-secondary" data-stop-regular="${b.regular_id}">Остановить абонемент</button></div>` : ""}
+            <div style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap">
+              ${b.regular_id ? `<button class="btn btn-sm btn-secondary" data-stop-regular="${b.regular_id}">Остановить абонемент</button>` : ""}
+              <button class="btn btn-sm btn-secondary" data-ics="${b.id}">📆 В календарь</button>
+            </div>
           </div>
           <div style="display:flex;gap:6px;flex:0 0 auto">
-            <button class="btn btn-sm btn-secondary" data-reschedule="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">📅</button>
+            ${b.is_group ? "" : `<button class="btn btn-sm btn-secondary" data-reschedule="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">📅</button>`}
             <button class="btn btn-sm btn-danger" data-cancel="${b.id}">Отменить</button>
           </div>
         </div>`;
@@ -1839,6 +2028,21 @@
           }
           renderClientMy();
         });
+      };
+    });
+    content.querySelectorAll("[data-ics]").forEach((btn) => {
+      btn.onclick = () => {
+        const b = data.bookings.find((x) => String(x.id) === btn.dataset.ics);
+        if (!b) return;
+        const title = whoLine(b).replace(/<[^>]+>/g, "") + (b.service_name ? ` — ${b.service_name}` : "");
+        const ics = buildIcs({
+          title,
+          description: b.trainer_phone ? `Телефон: ${b.trainer_phone}` : "",
+          location: b.trainer_address || "",
+          slotDt: b.slot_dt,
+          durationMin: b.service_duration_min || 60,
+        });
+        downloadIcs(`booking-${b.slot_dt.slice(0, 10)}.ics`, ics);
       };
     });
     content.querySelectorAll("[data-reschedule]").forEach((btn) => {

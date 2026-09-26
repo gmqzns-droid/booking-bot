@@ -106,6 +106,7 @@ def slot_to_dict(row) -> dict:
         "staff_name": row["staff_name"] if "staff_name" in row.keys() else None,
         "no_show": bool(row["no_show"]) if "no_show" in row.keys() else False,
         "is_regular": bool(row["regular_id"]) if "regular_id" in row.keys() and row["regular_id"] else False,
+        "group_id": row["group_id"] if "group_id" in row.keys() else None,
     }
 
 
@@ -619,6 +620,21 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             ],
         })
 
+    def _parse_capacity(body) -> tuple[bool, int]:
+        """capacity=1 (или не передано) — обычный одиночный слот, как раньше.
+        capacity>1 — групповое занятие на столько мест. Ограничиваем сверху разумным
+        числом, чтобы не наплодить тысячи строк по ошибке."""
+        raw = body.get("capacity")
+        if raw in (None, "", 1, "1"):
+            return True, 1
+        try:
+            capacity = int(raw)
+        except (TypeError, ValueError):
+            return False, 1
+        if not (1 <= capacity <= 100):
+            return False, 1
+        return True, capacity
+
     @require_auth
     async def handle_slot_add(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
@@ -632,7 +648,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             datetime.strptime(slot_dt, "%Y-%m-%d %H:%M")
         except ValueError:
             return web.json_response({"error": "bad slot_dt"}, status=400)
-        ok = db.add_slot(user["id"], staff["id"], staff["name"], slot_dt)
+        cap_ok, capacity = _parse_capacity(body)
+        if not cap_ok:
+            return web.json_response({"error": "bad capacity"}, status=400)
+        ok = db.add_group_slot(user["id"], staff["id"], staff["name"], slot_dt, capacity)
         if not ok:
             return web.json_response({"error": "already exists"}, status=409)
         await notify_waitlist(user["id"], staff["id"])
@@ -654,6 +673,9 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         weekdays = [int(w) for w in weekdays if isinstance(w, (int, str)) and 0 <= int(w) <= 6]
         if not weekdays:
             return web.json_response({"error": "no weekdays"}, status=400)
+        cap_ok, capacity = _parse_capacity(body)
+        if not cap_ok:
+            return web.json_response({"error": "bad capacity"}, status=400)
 
         today = db.now_msk().date()
         added = skipped = 0
@@ -663,7 +685,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             for week in range(RECUR_WEEKS):
                 d = base + timedelta(weeks=week)
                 slot_dt = f"{d:%Y-%m-%d} {hh:02d}:{mm:02d}"
-                if db.add_slot(user["id"], staff["id"], staff["name"], slot_dt):
+                if db.add_group_slot(user["id"], staff["id"], staff["name"], slot_dt, capacity):
                     added += 1
                 else:
                     skipped += 1
@@ -740,6 +762,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             conflict = db.find_overlapping_booked_slot(
                 old["trainer_id"], old["staff_id"], new_row["slot_dt"], old_service["duration_min"],
                 exclude_slot_id=old["id"],
+                exclude_group_id=new_row["group_id"] if "group_id" in new_row.keys() else None,
             )
             if conflict:
                 return web.json_response({"error": "slot_conflict"}, status=409)
@@ -1095,6 +1118,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if service and service["duration_min"]:
             conflict = db.find_overlapping_booked_slot(
                 slot_pre["trainer_id"], slot_pre["staff_id"], slot_pre["slot_dt"], service["duration_min"],
+                exclude_group_id=slot_pre["group_id"] if "group_id" in slot_pre.keys() else None,
             )
             if conflict:
                 return web.json_response({"error": "slot_conflict"}, status=409)
@@ -1225,6 +1249,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             conflict = db.find_overlapping_booked_slot(
                 old["trainer_id"], old["staff_id"], new["slot_dt"], old_service["duration_min"],
                 exclude_slot_id=old["id"],
+                exclude_group_id=new["group_id"] if "group_id" in new.keys() else None,
             )
             if conflict:
                 return web.json_response({"error": "slot_conflict"}, status=409)
@@ -1261,6 +1286,8 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             "staff_name": r["staff_name"] if "staff_name" in r.keys() else None,
             "discount_label": r["discount_label"] if "discount_label" in r.keys() else None,
             "regular_id": r["regular_id"] if "regular_id" in r.keys() else None,
+            "is_group": bool(r["group_id"]) if "group_id" in r.keys() and r["group_id"] else False,
+            "service_duration_min": r["service_duration_min"] if "service_duration_min" in r.keys() else None,
         }
 
     @require_auth
