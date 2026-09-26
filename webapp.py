@@ -607,9 +607,30 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         clients = db.list_clients(user["id"])
+        next_by_client = db.next_bookings_by_client(user["id"])
+        trainer_is_business = bool(db.get_trainer(user["id"])["is_business"])
+
+        def next_booking_dict(slot):
+            if not slot:
+                return None
+            return {
+                "slot_id": slot["id"],
+                "slot_dt": slot["slot_dt"],
+                "service_name": slot["service_name"],
+                "staff_name": slot["staff_name"] if trainer_is_business else None,
+                "promo_code": slot["promo_code"],
+                "discount_label": slot["discount_label"],
+            }
+
         return web.json_response({
             "clients": [
-                {"id": c["id"], "name": c["name"], "username": c["username"], "blocked": bool(c["blocked"])}
+                {
+                    "id": c["id"],
+                    "name": c["name"],
+                    "username": c["username"],
+                    "blocked": bool(c["blocked"]),
+                    "next_booking": next_booking_dict(next_by_client.get(c["id"])),
+                }
                 for c in clients
             ],
         })

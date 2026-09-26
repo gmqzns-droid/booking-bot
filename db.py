@@ -612,6 +612,29 @@ def list_clients(trainer_id: int):
         ).fetchall()
 
 
+def next_bookings_by_client(trainer_id: int) -> dict:
+    """Для каждого клиента тренера — его ближайшая предстоящая запись (booked, slot_dt >= сейчас).
+    Возвращает {client_id: slot_row}."""
+    with get_conn() as conn:
+        now = now_msk().strftime("%Y-%m-%d %H:%M")
+        rows = conn.execute(
+            """
+            SELECT s.* FROM slots s
+            INNER JOIN (
+                SELECT client_id, MIN(slot_dt) AS min_dt FROM slots
+                WHERE trainer_id=? AND status='booked' AND slot_dt >= ? AND client_id IS NOT NULL
+                GROUP BY client_id
+            ) nxt ON s.client_id = nxt.client_id AND s.slot_dt = nxt.min_dt
+            WHERE s.trainer_id=? AND s.status='booked'
+            """,
+            (trainer_id, now, trainer_id),
+        ).fetchall()
+    result = {}
+    for row in rows:
+        result.setdefault(row["client_id"], row)
+    return result
+
+
 def set_client_blocked(trainer_id: int, client_id: int, blocked: bool) -> bool:
     with get_conn() as conn:
         cur = conn.execute(

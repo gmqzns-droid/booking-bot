@@ -757,14 +757,31 @@
     }
     let html = '<div class="card">';
     data.clients.forEach((c) => {
-      html += `<div class="list-item">
-        <div class="list-item-main">
-          <div class="list-item-title">${escapeHtml(c.name || "Без имени")}${c.blocked ? " 🚫" : ""}</div>
-          <div class="list-item-sub">${c.username ? "@" + escapeHtml(c.username) : ""}</div>
+      const nb = c.next_booking;
+      let bookingHtml = '<div class="list-item-sub" style="margin-top:4px">Нет предстоящих записей</div>';
+      if (nb) {
+        const parts = [fmtSlotDt(nb.slot_dt)];
+        if (nb.staff_name) parts.push(nb.staff_name);
+        if (nb.service_name) parts.push(nb.service_name);
+        bookingHtml = `<div class="list-item-sub" style="margin-top:4px">${escapeHtml(parts.join(" · "))}</div>`;
+        if (nb.promo_code) {
+          bookingHtml += `<div class="badge badge-accent" style="margin-top:6px">Промокод: ${escapeHtml(nb.discount_label || nb.promo_code)}</div>`;
+        }
+      }
+      html += `<div class="list-item" style="align-items:flex-start; flex-direction:column; gap:10px">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; width:100%">
+          <div class="list-item-main">
+            <div class="list-item-title">${escapeHtml(c.name || "Без имени")}${c.blocked ? " 🚫" : ""}</div>
+            <div class="list-item-sub">${c.username ? "@" + escapeHtml(c.username) : ""}</div>
+            ${bookingHtml}
+          </div>
         </div>
-        <button class="btn btn-sm ${c.blocked ? "btn-secondary" : "btn-danger"}" data-block="${c.id}" data-blocked="${c.blocked ? 1 : 0}">
-          ${c.blocked ? "Разблокировать" : "Заблокировать"}
-        </button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; width:100%">
+          ${nb ? `<button class="btn btn-sm btn-danger" data-cancel-slot="${nb.slot_id}">Отменить запись</button>` : ""}
+          <button class="btn btn-sm ${c.blocked ? "btn-secondary" : "btn-danger"}" data-block="${c.id}" data-blocked="${c.blocked ? 1 : 0}">
+            ${c.blocked ? "Разблокировать" : "Заблокировать"}
+          </button>
+        </div>
       </div>`;
     });
     html += "</div>";
@@ -784,6 +801,20 @@
               body: JSON.stringify({ client_id: clientId, blocked: !currentlyBlocked }),
             });
             haptic("success");
+            renderProviderClients();
+          } catch (e) { showToast("Не получилось"); }
+        });
+      };
+    });
+
+    content.querySelectorAll("[data-cancel-slot]").forEach((btn) => {
+      btn.onclick = () => {
+        const slotId = btn.dataset.cancelSlot;
+        showConfirm("Отменить эту запись клиента?", async () => {
+          try {
+            await api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
+            haptic("success");
+            showToast("Запись отменена");
             renderProviderClients();
           } catch (e) { showToast("Не получилось"); }
         });
