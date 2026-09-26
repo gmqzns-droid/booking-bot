@@ -101,6 +101,7 @@ def slot_to_dict(row) -> dict:
         "time": row["slot_dt"][-5:],
         "status": row["status"],
         "client_name": row["client_name"] if "client_name" in row.keys() else None,
+        "client_custom_name": row["client_custom_name"] if "client_custom_name" in row.keys() else None,
         "service_name": row["service_name"] if "service_name" in row.keys() else None,
         "staff_name": row["staff_name"] if "staff_name" in row.keys() else None,
         "no_show": bool(row["no_show"]) if "no_show" in row.keys() else False,
@@ -148,6 +149,7 @@ def trainer_public_dict(trainer) -> dict:
         "id": trainer["id"],
         "name": trainer["name"],
         "category": trainer["category"],
+        "address": trainer["address"] if "address" in trainer.keys() else None,
         "is_business": bool(trainer["is_business"]) if "is_business" in trainer.keys() else False,
         "cancel_min_hours": trainer["cancel_min_hours"] if "cancel_min_hours" in trainer.keys() else 0,
         "terms": terms,
@@ -219,6 +221,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                     "id": trainer["id"],
                     "name": trainer["name"],
                     "category": trainer["category"],
+                    "address": trainer["address"] if "address" in trainer.keys() else None,
                     "is_business": bool(trainer["is_business"]),
                     "cancel_min_hours": trainer["cancel_min_hours"] if "cancel_min_hours" in trainer.keys() else 0,
                     "terms": terminology.terms_for(trainer["category_key"]),
@@ -261,6 +264,9 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if "category" in body:
             category = (body.get("category") or "").strip()[:120]
             db.set_trainer_category(user["id"], category, terminology.classify_category(category))
+        if "address" in body:
+            address = (body.get("address") or "").strip()[:200]
+            db.set_trainer_address(user["id"], address or None)
         if "is_business" in body:
             want_business = bool(body.get("is_business"))
             if not want_business and db.count_staff(user["id"]) > 1:
@@ -403,7 +409,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return web.json_response({
             "slots": [slot_to_dict(s) | {"date": s["slot_dt"][:10]} for s in slots],
             "recent_past": [
-                {"id": s["id"], "slot_dt": s["slot_dt"], "client_name": s["client_name"]}
+                {
+                    "id": s["id"], "slot_dt": s["slot_dt"], "client_name": s["client_name"],
+                    "client_custom_name": s["client_custom_name"] if "client_custom_name" in s.keys() else None,
+                }
                 for s in recent_past
             ],
         })
@@ -620,6 +629,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                 "staff_name": slot["staff_name"] if trainer_is_business else None,
                 "promo_code": slot["promo_code"],
                 "discount_label": slot["discount_label"],
+                "client_custom_name": slot["client_custom_name"] if "client_custom_name" in slot.keys() else None,
             }
 
         return web.json_response({
@@ -627,6 +637,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                 {
                     "id": c["id"],
                     "name": c["name"],
+                    "custom_name": c["custom_name"] if "custom_name" in c.keys() else None,
                     "username": c["username"],
                     "blocked": bool(c["blocked"]),
                     "next_booking": next_booking_dict(next_by_client.get(c["id"])),
@@ -764,7 +775,9 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         # Дни/слоты сюда не включаем — они запрашиваются отдельно для конкретного
         # сотрудника через /api/client/staff_schedule, после того как клиент его выберет
         # (при одном сотруднике — соло-специалист — фронтенд выберет его сам, без показа выбора).
-        return web.json_response(trainer_public_dict(trainer))
+        data = trainer_public_dict(trainer)
+        data["own_name"] = db.get_client_custom_name(user["id"])
+        return web.json_response(data)
 
     @require_auth
     async def handle_client_staff_schedule(request: web.Request, user: dict) -> web.Response:
@@ -863,14 +876,19 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
 
         full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Без имени"
         username = user.get("username")
+        custom_name = (body.get("client_name") or "").strip()[:80] or None
+        if not custom_name:
+            return web.json_response({"error": "name_required"}, status=400)
 
         ok = db.book_slot(
             slot_id, user["id"], full_name, username,
             service_id=service["id"] if service else None,
             service_name=service["name"] if service else None,
+            client_custom_name=custom_name,
         )
         if not ok:
             return web.json_response({"error": "slot taken"}, status=409)
+        db.set_client_custom_name(user["id"], custom_name)
 
         discount_label = None
         if promo:
@@ -903,12 +921,13 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         except Exception:
             logger.warning("Не удалось отправить подтверждение клиенту %s", user["id"])
 
+        name_line = f"{esc(custom_name)} (тг: {esc(full_name)})" if custom_name != full_name else esc(full_name)
         contact = f" (@{esc(username)})" if username else ""
         staff_line = f" · к {esc(staff_name)}" if trainer["is_business"] else ""
         try:
             await bot.send_message(
                 slot["trainer_id"],
-                f"🔔 <b>Новая запись!</b>\n{esc(full_name)}{contact}{service_line}{staff_line} — "
+                f"🔔 <b>Новая запись!</b>\n{name_line}{contact}{service_line}{staff_line} — "
                 f"{fmt_slot(slot['slot_dt'])}{promo_line}",
             )
         except Exception:
@@ -1008,6 +1027,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     def _booking_to_dict(r) -> dict:
         return {
             "id": r["id"], "slot_dt": r["slot_dt"], "trainer_name": r["trainer_name"],
+            "trainer_address": r["trainer_address"] if "trainer_address" in r.keys() else None,
             "service_id": r["service_id"] if "service_id" in r.keys() else None,
             "service_name": r["service_name"] if "service_name" in r.keys() else None,
             "staff_id": r["staff_id"] if "staff_id" in r.keys() else None,

@@ -46,6 +46,15 @@
     return div.innerHTML;
   }
 
+  // Имя, которое клиент указал сам при записи, вместе с его тг-именем (если они различаются).
+  function clientDisplayName(tgName, customName) {
+    const tg = tgName || "";
+    const custom = (customName || "").trim();
+    if (!custom) return tg || "Без имени";
+    if (!tg || custom === tg) return custom;
+    return `${custom} (тг: ${tg})`;
+  }
+
   function showToast(text) {
     const t = el("toast");
     t.textContent = text;
@@ -299,7 +308,7 @@
         html += `<div class="list-item">
           <div class="list-item-main">
             <div class="list-item-title">${escapeHtml(fmtSlotDt(s.slot_dt))}</div>
-            <div class="list-item-sub">${escapeHtml(s.client_name || "")}</div>
+            <div class="list-item-sub">${escapeHtml(clientDisplayName(s.client_name, s.client_custom_name))}</div>
           </div>
           <button class="btn btn-sm btn-danger" data-noshow="${s.id}">Не пришёл</button>
         </div>`;
@@ -317,7 +326,7 @@
           const booked = s.status === "booked";
           html += `<div class="list-item" data-slot="${s.id}" data-booked="${booked ? 1 : 0}">
             <div class="list-item-main">
-              <div class="list-item-title">${s.time}${booked ? " · " + escapeHtml(s.client_name || "") : ""}</div>
+              <div class="list-item-title">${s.time}${booked ? " · " + escapeHtml(clientDisplayName(s.client_name, s.client_custom_name)) : ""}</div>
               <div class="list-item-sub">${booked ? escapeHtml(s.service_name || "Занято") : "Свободно"}</div>
             </div>
             <span class="badge${booked ? " badge-warn" : ""}">${booked ? "Отменить" : "Удалить"}</span>
@@ -376,7 +385,7 @@
     if (!slot) return;
     openSheet(`
       <div class="sheet-title">${escapeHtml(fmtDay(slot.date))}, ${slot.time}</div>
-      <p class="muted" style="margin-top:-10px">${escapeHtml(slot.client_name || "")}${slot.service_name ? " · " + escapeHtml(slot.service_name) : ""}</p>
+      <p class="muted" style="margin-top:-10px">${escapeHtml(clientDisplayName(slot.client_name, slot.client_custom_name))}${slot.service_name ? " · " + escapeHtml(slot.service_name) : ""}</p>
       <button class="btn btn-secondary btn-block" id="act-reschedule" style="margin-bottom:8px">📅 Перенести</button>
       <button class="btn btn-danger btn-block" id="act-cancel">Отменить запись</button>
     `);
@@ -771,7 +780,7 @@
       html += `<div class="list-item" style="align-items:flex-start; flex-direction:column; gap:10px">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; width:100%">
           <div class="list-item-main">
-            <div class="list-item-title">${escapeHtml(c.name || "Без имени")}${c.blocked ? " 🚫" : ""}</div>
+            <div class="list-item-title">${escapeHtml(clientDisplayName(c.name, c.custom_name))}${c.blocked ? " 🚫" : ""}</div>
             <div class="list-item-sub">${c.username ? "@" + escapeHtml(c.username) : ""}</div>
             ${bookingHtml}
           </div>
@@ -837,6 +846,11 @@
           <input class="input" id="pf-category" type="text" maxlength="120" value="${escapeHtml(PROVIDER.category || "")}" />
         </div>
         <div class="field">
+          <label class="field-label">Адрес (необязательно)</label>
+          <input class="input" id="pf-address" type="text" maxlength="200" placeholder="Например: ул. Ленина, 10, офис 5" value="${escapeHtml(PROVIDER.address || "")}" />
+          <div class="field-hint">Покажется клиенту в «Моих записях» рядом с записью.</div>
+        </div>
+        <div class="field">
           <label class="field-label">Не отменять позже чем за N часов</label>
           <input class="input" id="pf-cancel-hours" type="number" min="0" max="168" step="1" value="${PROVIDER.cancel_min_hours || 0}" />
           <div class="field-hint">0 — можно отменять в любой момент. Действует и на перенос записи клиентом.</div>
@@ -881,15 +895,17 @@
     el("pf-save").onclick = async () => {
       const name = el("pf-name").value.trim();
       const category = el("pf-category").value.trim();
+      const address = el("pf-address").value.trim();
       const cancelHours = Math.max(0, parseInt(el("pf-cancel-hours").value, 10) || 0);
       if (!name) { showToast("Укажи имя"); return; }
       try {
         await api("/api/provider/profile", {
           method: "POST",
-          body: JSON.stringify({ name, category, cancel_min_hours: cancelHours }),
+          body: JSON.stringify({ name, category, address, cancel_min_hours: cancelHours }),
         });
         PROVIDER.name = name;
         PROVIDER.category = category;
+        PROVIDER.address = address;
         PROVIDER.cancel_min_hours = cancelHours;
         haptic("success");
         showToast("Сохранено");
@@ -1125,6 +1141,7 @@
   let PRESET_STAFF_ID = null;   // выставляется кнопкой «Повторить» из истории записей
   let PRESET_SERVICE_ID = null;
   let ENTERED_PROMO_CODE = null;
+  let ENTERED_CLIENT_NAME = null;  // имя, которое клиент указывает при записи (не тг-ник)
   let RESCHEDULE_SLOT_ID = null;   // выставляется кнопкой «Перенести» — какую запись двигаем
 
   function renderClientBook() {
@@ -1179,6 +1196,12 @@
     }
 
     if (!rescheduling) {
+      if (ENTERED_CLIENT_NAME === null) ENTERED_CLIENT_NAME = CLIENT_HOME.own_name || "";
+      html += `<div class="field">
+        <label class="field-label">Ваше имя</label>
+        <input class="input" id="client-name-input" type="text" maxlength="80" enterkeyhint="done" placeholder="Как к вам обращаться?" value="${escapeHtml(ENTERED_CLIENT_NAME || "")}" />
+        <div class="field-hint">Специалист увидит его вместе с ником в Telegram.</div>
+      </div>`;
       html += `<div class="field">
         <label class="field-label">Промокод (если есть)</label>
         <div class="input-row">
@@ -1198,6 +1221,11 @@
         RESCHEDULE_SLOT_ID = null;
         renderClientBook();
       };
+    }
+
+    if (el("client-name-input")) {
+      el("client-name-input").oninput = (e) => { ENTERED_CLIENT_NAME = e.target.value; };
+      el("client-name-input").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
     }
 
     if (el("promo-input")) {
@@ -1324,6 +1352,12 @@
       });
       return;
     }
+    const clientName = (ENTERED_CLIENT_NAME || "").trim();
+    if (!clientName) {
+      showToast("Укажи своё имя перед записью");
+      if (el("client-name-input")) el("client-name-input").focus();
+      return;
+    }
     const terms = CLIENT_HOME.terms;
     const svc = CLIENT_HOME.services.find((s) => String(s.id) === String(selectedServiceId));
     const svcLine = svc ? ` (${svc.name})` : "";
@@ -1334,6 +1368,7 @@
           body: JSON.stringify({
             slot_id: slot.id, service_id: selectedServiceId || null,
             promo_code: ENTERED_PROMO_CODE || null,
+            client_name: clientName,
           }),
         });
         haptic("success");
@@ -1349,6 +1384,7 @@
           promo_used: "Ты уже использовал(а) этот промокод",
           slot_conflict: "На это время накладывается другая запись — выбери другое время",
           blocked: "К сожалению, запись к этому специалисту сейчас недоступна",
+          name_required: "Укажи своё имя перед записью",
         };
         const errCode = (e && e.message) || "";
         showToast(messages[errCode] || (e.status === 409 ? "Увы, время уже заняли" : "Не получилось записаться"));
@@ -1390,6 +1426,7 @@
           <div class="list-item-main">
             <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
             <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}${b.discount_label ? " · 🏷 " + escapeHtml(b.discount_label) : ""}</div>
+            ${b.trainer_address ? `<div class="list-item-sub" style="margin-top:2px">📍 ${escapeHtml(b.trainer_address)}</div>` : ""}
           </div>
           <div style="display:flex;gap:6px;flex:0 0 auto">
             <button class="btn btn-sm btn-secondary" data-reschedule="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">📅</button>

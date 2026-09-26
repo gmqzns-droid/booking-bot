@@ -181,6 +181,9 @@ def init_db():
         _ensure_column(conn, "trainers", "category", "TEXT")
         _ensure_column(conn, "trainers", "category_key", "TEXT")
         _ensure_column(conn, "trainers", "is_business", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "trainers", "address", "TEXT")
+        _ensure_column(conn, "clients", "custom_name", "TEXT")
+        _ensure_column(conn, "slots", "client_custom_name", "TEXT")
         # У слотов, заведённых до появления сотрудников, уникальный индекс был на
         # (trainer_id, slot_dt) — теперь то же самое время может быть свободно у РАЗНЫХ
         # сотрудников одного бизнеса, поэтому индекс должен учитывать staff_id.
@@ -763,14 +766,31 @@ def book_slot(
     client_username: str | None = None,
     service_id: int | None = None,
     service_name: str | None = None,
+    client_custom_name: str | None = None,
 ) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=?, "
-            "service_id=?, service_name=? WHERE id=? AND status='free'",
-            (client_id, client_name, client_username, service_id, service_name, slot_id),
+            "service_id=?, service_name=?, client_custom_name=? WHERE id=? AND status='free'",
+            (client_id, client_name, client_username, service_id, service_name, client_custom_name, slot_id),
         )
         return cur.rowcount > 0
+
+
+def set_client_custom_name(client_id: int, custom_name: str | None):
+    with get_conn() as conn:
+        conn.execute("UPDATE clients SET custom_name=? WHERE id=?", (custom_name, client_id))
+
+
+def get_client_custom_name(client_id: int) -> str | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT custom_name FROM clients WHERE id=?", (client_id,)).fetchone()
+    return row["custom_name"] if row else None
+
+
+def set_trainer_address(trainer_id: int, address: str | None):
+    with get_conn() as conn:
+        conn.execute("UPDATE trainers SET address=? WHERE id=?", (address, trainer_id))
 
 
 def find_overlapping_booked_slot(
@@ -829,11 +849,12 @@ def reschedule_slot(old_slot_id: int, new_slot_id: int) -> bool:
             return False
         cur = conn.execute(
             "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=?, "
-            "service_id=?, service_name=?, promo_code=?, discount_label=?, "
+            "service_id=?, service_name=?, promo_code=?, discount_label=?, client_custom_name=?, "
             "reminder_24h_sent=0, reminder_1h_sent=0, no_show=0 WHERE id=? AND status='free'",
             (
                 old["client_id"], old["client_name"], old["client_username"],
                 old["service_id"], old["service_name"], old["promo_code"], old["discount_label"],
+                old["client_custom_name"] if "client_custom_name" in old.keys() else None,
                 new_slot_id,
             ),
         )
@@ -841,7 +862,7 @@ def reschedule_slot(old_slot_id: int, new_slot_id: int) -> bool:
             return False
         conn.execute(
             "UPDATE slots SET status='free', client_id=NULL, client_name=NULL, client_username=NULL, "
-            "service_id=NULL, service_name=NULL, promo_code=NULL, discount_label=NULL, "
+            "service_id=NULL, service_name=NULL, promo_code=NULL, discount_label=NULL, client_custom_name=NULL, "
             "reminder_24h_sent=0, reminder_1h_sent=0, no_show=0, review_requested=0 WHERE id=?",
             (old_slot_id,),
         )
@@ -858,7 +879,8 @@ def free_up_slot(slot_id: int) -> bool:
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE slots SET status='free', client_id=NULL, client_name=NULL, client_username=NULL, "
-            "service_id=NULL, service_name=NULL, reminder_24h_sent=0, reminder_1h_sent=0 WHERE id=?",
+            "service_id=NULL, service_name=NULL, client_custom_name=NULL, "
+            "reminder_24h_sent=0, reminder_1h_sent=0 WHERE id=?",
             (slot_id,),
         )
         return cur.rowcount > 0
@@ -888,7 +910,7 @@ def mark_no_show(slot_id: int) -> bool:
 def list_client_bookings(client_id: int):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT slots.*, trainers.name AS trainer_name FROM slots "
+            "SELECT slots.*, trainers.name AS trainer_name, trainers.address AS trainer_address FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
             "WHERE client_id=? AND status='booked' AND slot_dt >= ? ORDER BY slot_dt",
             (client_id, now_msk().strftime("%Y-%m-%d %H:%M")),
@@ -902,7 +924,7 @@ def list_client_past_bookings(client_id: int, limit: int = 10):
     (это была бы чужая история, а не клиента)."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT slots.*, trainers.name AS trainer_name FROM slots "
+            "SELECT slots.*, trainers.name AS trainer_name, trainers.address AS trainer_address FROM slots "
             "JOIN trainers ON trainers.id = slots.trainer_id "
             "WHERE client_id=? AND status='booked' AND slot_dt < ? "
             "ORDER BY slot_dt DESC LIMIT ?",
