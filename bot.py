@@ -119,10 +119,53 @@ def persistent_kb() -> ReplyKeyboardMarkup | None:
 
 # ---------- /start, /help ----------
 
+async def handle_regular_invite(message: Message, token: str) -> bool:
+    """Ссылка-приглашение на постоянную запись (/start reg_<token>): открывший её человек
+    привязывается именно к этому абонементу (фиксированный день/время у конкретного
+    сотрудника). Возвращает True, если это была ссылка на существующий активный абонемент
+    (тогда /start шлёт отдельное приветствие с деталями абонемента и не продолжает обычным
+    сценарием ниже)."""
+    regular = db.get_regular_by_token(token)
+    if not regular or not regular["active"]:
+        return False
+    if regular["client_id"] and regular["client_id"] != message.from_user.id:
+        # Ссылку уже принял кто-то другой — не даём перехватить чужой абонемент.
+        await message.answer("⚠️ Эта ссылка на постоянную запись уже использована другим учеником.")
+        return True
+
+    db.link_client(message.from_user.id, regular["trainer_id"], message.from_user.full_name, message.from_user.username)
+    if not regular["client_id"]:
+        db.link_regular_client(regular["id"], message.from_user.id, message.from_user.full_name, message.from_user.username)
+        db.book_existing_regular_slots(
+            regular["id"], message.from_user.id, message.from_user.full_name, message.from_user.username
+        )
+        try:
+            await bot.send_message(
+                regular["trainer_id"],
+                f"✅ <b>{esc(message.from_user.full_name)}</b> принял(а) приглашение на постоянную запись "
+                f"({DAYS_RU[regular['weekday']]}, {regular['hh']:02d}:{regular['mm']:02d}).",
+            )
+        except Exception:
+            logger.warning("Не удалось уведомить специалиста %s о принятии абонемента", regular["trainer_id"])
+
+    trainer = db.get_trainer(regular["trainer_id"])
+    kb = persistent_kb()
+    await message.answer(
+        f"👋 Готово! Тебя записали на постоянной основе к <b>{esc(trainer['name'] if trainer else '')}</b>: "
+        f"каждый(ую) <b>{DAYS_RU[regular['weekday']]}</b> в <b>{regular['hh']:02d}:{regular['mm']:02d}</b>.\n"
+        f"Ближайшие занятия увидишь во вкладке «Мои записи» в приложении.",
+        reply_markup=kb,
+    )
+    return True
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: CommandObject):
     payload = (command.args or "").strip()
-    if payload.isdigit() and db.get_trainer(int(payload)):
+    if payload.startswith("reg_"):
+        if await handle_regular_invite(message, payload[4:]):
+            return
+    elif payload.isdigit() and db.get_trainer(int(payload)):
         # Переход по персональной ссылке специалиста — привязываем клиента.
         db.link_client(message.from_user.id, int(payload), message.from_user.full_name, message.from_user.username)
 
@@ -365,6 +408,7 @@ async def main():
     scheduler.add_job(send_reminders, "interval", minutes=5)
     scheduler.add_job(send_review_requests, "interval", minutes=20)
     scheduler.add_job(send_db_backup, "cron", hour=6, minute=0, timezone=MSK)
+    scheduler.add_job(db.generate_all_regular_occurrences, "cron", hour=4, minute=15, timezone=MSK)
     scheduler.start()
 
     # Веб-сервер мини-приложения (API + статика) — крутится в этом же процессе,

@@ -353,7 +353,7 @@
           const booked = s.status === "booked";
           html += `<div class="list-item" data-slot="${s.id}" data-booked="${booked ? 1 : 0}">
             <div class="list-item-main">
-              <div class="list-item-title">${s.time}${booked ? " · " + escapeHtml(clientDisplayName(s.client_name, s.client_custom_name)) : ""}</div>
+              <div class="list-item-title">${s.time}${booked ? " · " + escapeHtml(clientDisplayName(s.client_name, s.client_custom_name)) : ""}${s.is_regular ? " 🔁" : ""}</div>
               <div class="list-item-sub">${booked ? escapeHtml(s.service_name || "Занято") : "Свободно"}</div>
             </div>
             <span class="badge${booked ? " badge-warn" : ""}">${booked ? "Отменить" : "Удалить"}</span>
@@ -895,19 +895,33 @@
     hideFab();
     const content = el("content");
     content.innerHTML = '<div class="center" style="padding:40px 0"><div class="spinner"></div></div>';
-    let data;
+    let data, regularsData, servicesData;
     try {
-      data = await api("/api/provider/clients", { method: "GET" });
+      const calls = [
+        api("/api/provider/clients", { method: "GET" }),
+        api("/api/provider/regulars", { method: "GET" }),
+        api("/api/provider/services", { method: "GET" }),
+      ];
+      const results = await Promise.all(calls);
+      data = results[0];
+      regularsData = results[1];
+      servicesData = results[2];
     } catch (e) {
       content.innerHTML = '<div class="empty-state"><div class="empty-text">Не удалось загрузить список</div></div>';
       return;
     }
+    PROVIDER.servicesCache = servicesData.services || [];
+
+    let html = renderRegularsSection(regularsData.regulars || []);
+
     if (!data.clients.length) {
-      content.innerHTML = '<div class="empty-state"><div class="empty-emoji">👥</div><div class="empty-title">Пока нет клиентов</div>' +
+      html += '<div class="empty-state"><div class="empty-emoji">👥</div><div class="empty-title">Пока нет клиентов</div>' +
         '<div class="empty-text">Поделись своей ссылкой — вкладка «Профиль».</div></div>';
+      content.innerHTML = html;
+      wireRegularsSection();
       return;
     }
-    let html = '<div class="card">';
+    html += '<div class="card">';
     data.clients.forEach((c) => {
       const nb = c.next_booking;
       let bookingHtml = '<div class="list-item-sub" style="margin-top:4px">Нет предстоящих записей</div>';
@@ -972,6 +986,155 @@
         });
       };
     });
+
+    wireRegularsSection();
+  }
+
+  // ---------- постоянные записи (абонементы) ----------
+
+  let REGULARS_BY_ID = {};
+
+  function renderRegularsSection(regulars) {
+    REGULARS_BY_ID = {};
+    regulars.forEach((r) => { REGULARS_BY_ID[r.id] = r; });
+    let html = '<div class="card">';
+    html += `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:${regulars.length ? "10px" : "4px"}">
+      <div class="card-title" style="margin:0">Постоянные ученики</div>
+      <button class="btn btn-sm btn-secondary" id="reg-add-btn">+ Добавить</button>
+    </div>`;
+    if (!regulars.length) {
+      html += '<p class="muted">Ученик или клиент с фиксированным днём и временем в неделю — заведи расписание один раз и поделись ссылкой, дальше занятия появляются сами.</p>';
+    } else {
+      regulars.forEach((r) => {
+        const whoLine = r.client_id
+          ? clientDisplayName(r.client_name, null) + (r.client_username ? ` (@${escapeHtml(r.client_username)})` : "")
+          : "⏳ Ждём, пока ученик откроет ссылку" + (r.client_name ? ` (${escapeHtml(r.client_name)})` : "");
+        html += `<div class="list-item" style="align-items:flex-start; flex-direction:column; gap:8px">
+          <div class="list-item-main">
+            <div class="list-item-title">${DAYS_RU[r.weekday]}, ${r.time}${PROVIDER.is_business ? " · " + escapeHtml(r.staff_name || "") : ""}</div>
+            <div class="list-item-sub">${whoLine}</div>
+            ${r.service_name ? `<div class="list-item-sub">${escapeHtml(r.service_name)}</div>` : ""}
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; width:100%">
+            ${!r.client_id ? `<button class="btn btn-sm btn-secondary" data-copy-invite="${r.id}">Скопировать ссылку</button>` : ""}
+            <button class="btn btn-sm btn-danger" data-stop-regular="${r.id}">Остановить</button>
+          </div>
+        </div>`;
+      });
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function wireRegularsSection() {
+    const addBtn = el("reg-add-btn");
+    if (addBtn) addBtn.onclick = () => openRegularSheet();
+
+    document.querySelectorAll("[data-copy-invite]").forEach((btn) => {
+      btn.onclick = () => {
+        const r = REGULARS_BY_ID[btn.dataset.copyInvite];
+        if (!r) return;
+        try { navigator.clipboard.writeText(r.invite_link); showToast("Ссылка скопирована"); }
+        catch (e) { showToast("Не удалось скопировать"); }
+      };
+    });
+
+    document.querySelectorAll("[data-stop-regular]").forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.stopRegular;
+        showConfirm("Остановить постоянную запись? Будущие занятия по ней отменятся.", async () => {
+          try {
+            await api("/api/provider/regulars/stop", { method: "POST", body: JSON.stringify({ id }) });
+            haptic("success");
+            showToast("Остановлено");
+            renderProviderClients();
+          } catch (e) { showToast("Не получилось"); }
+        });
+      };
+    });
+  }
+
+  function openRegularSheet() {
+    const staffList = PROVIDER.staff || [];
+    const showStaffSelect = PROVIDER.is_business && staffList.length > 1;
+    const services = PROVIDER.servicesCache || [];
+
+    openSheet(`
+      <div class="sheet-title">Постоянный ученик</div>
+      <div class="field">
+        <label class="field-label">Имя ученика (необязательно)</label>
+        <input class="input" id="reg-name" type="text" maxlength="80" placeholder="Например: Аня" />
+        <div class="field-hint">Просто для тебя, до принятия ссылки. Когда ученик её откроет, увидим настоящее имя из Telegram.</div>
+      </div>
+      ${showStaffSelect ? `<div class="field">
+        <label class="field-label">Сотрудник</label>
+        <select class="input" id="reg-staff">${staffList.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("")}</select>
+      </div>` : ""}
+      <div class="field">
+        <label class="field-label">День недели</label>
+        <div class="chips" id="reg-weekday-chips">
+          ${DAYS_RU.map((d, i) => `<button class="chip${i === 0 ? " active" : ""}" data-wd="${i}">${d}</button>`).join("")}
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">Время</label>
+        <input class="input" type="time" id="reg-time" value="18:00" />
+      </div>
+      ${services.length ? `<div class="field">
+        <label class="field-label">Услуга (необязательно)</label>
+        <select class="input" id="reg-service"><option value="">Без услуги</option>${services.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("")}</select>
+      </div>` : ""}
+      <div class="field-hint" style="margin-bottom:14px">Занятия появятся на 8 недель вперёд и будут продлеваться автоматически, пока абонемент активен.</div>
+      <button class="btn btn-primary btn-block" id="reg-submit">Создать и получить ссылку</button>
+    `);
+
+    const wdChips = Array.from(el("sheet-card").querySelectorAll("[data-wd]"));
+    wdChips.forEach((c) => c.onclick = () => {
+      wdChips.forEach((x) => x.classList.remove("active"));
+      c.classList.add("active");
+    });
+
+    el("reg-submit").onclick = async () => {
+      const activeWd = wdChips.find((c) => c.classList.contains("active"));
+      const weekday = Number(activeWd ? activeWd.dataset.wd : 0);
+      const time = el("reg-time").value;
+      if (!time) { showToast("Укажи время"); return; }
+      const [hh, mm] = time.split(":").map(Number);
+      const staffId = showStaffSelect ? el("reg-staff").value : (staffList[0] && staffList[0].id);
+      if (!staffId) { showToast("Нет ни одного сотрудника"); return; }
+      const serviceSelect = el("reg-service");
+      const serviceId = serviceSelect && serviceSelect.value ? serviceSelect.value : null;
+      const clientName = el("reg-name").value.trim();
+      try {
+        const res = await api("/api/provider/regulars/add", {
+          method: "POST",
+          body: JSON.stringify({ staff_id: staffId, weekday, hh, mm, service_id: serviceId, client_name: clientName }),
+        });
+        closeSheet();
+        haptic("success");
+        renderProviderClients();
+        openInviteLinkSheet(res.regular.invite_link);
+      } catch (e) { showToast("Не получилось создать"); }
+    };
+  }
+
+  function openInviteLinkSheet(link) {
+    openSheet(`
+      <div class="sheet-title">Ссылка готова 🎉</div>
+      <p class="muted" style="margin-bottom:10px">Отправь её ученику — как только он её откроет, расписание появится у него в приложении, а ты получишь уведомление.</p>
+      <input class="input" id="reg-link" type="text" readonly value="${escapeHtml(link)}" style="margin-bottom:10px" />
+      <button class="btn btn-primary btn-block" id="reg-link-copy">Скопировать ссылку</button>
+    `);
+    el("reg-link-copy").onclick = () => {
+      try {
+        navigator.clipboard.writeText(link);
+        showToast("Ссылка скопирована");
+      } catch (e) {
+        el("reg-link").select();
+        document.execCommand("copy");
+        showToast("Ссылка скопирована");
+      }
+    };
   }
 
   async function renderProviderProfile() {
@@ -1634,10 +1797,11 @@
       data.bookings.forEach((b) => {
         html += `<div class="list-item">
           <div class="list-item-main">
-            <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}</div>
+            <div class="list-item-title">${escapeHtml(fmtSlotDt(b.slot_dt))}${b.regular_id ? ' <span class="badge">🔁 Абонемент</span>' : ""}</div>
             <div class="list-item-sub">${whoLine(b)}${b.service_name ? " · " + escapeHtml(b.service_name) : ""}${b.discount_label ? " · 🏷 " + escapeHtml(b.discount_label) : ""}</div>
             ${b.trainer_address ? `<div class="list-item-sub" style="margin-top:2px">📍 ${b.branch_name ? escapeHtml(b.branch_name) + " · " : ""}${escapeHtml(b.trainer_address)}</div>` : ""}
             ${b.trainer_phone ? `<div class="list-item-sub" style="margin-top:2px">☎ ${escapeHtml(b.trainer_phone)}</div>` : ""}
+            ${b.regular_id ? `<div style="margin-top:6px"><button class="btn btn-sm btn-secondary" data-stop-regular="${b.regular_id}">Остановить абонемент</button></div>` : ""}
           </div>
           <div style="display:flex;gap:6px;flex:0 0 auto">
             <button class="btn btn-sm btn-secondary" data-reschedule="${b.id}" data-staff="${b.staff_id || ""}" data-service="${b.service_id || ""}">📅</button>
@@ -1683,6 +1847,19 @@
         PRESET_STAFF_ID = btn.dataset.staff || null;
         PRESET_SERVICE_ID = btn.dataset.service || null;
         setTab("book");
+      };
+    });
+    content.querySelectorAll("[data-stop-regular]").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const regularId = btn.dataset.stopRegular;
+        showConfirm("Остановить постоянную запись целиком? Будущие занятия по ней отменятся.", async () => {
+          try {
+            await api("/api/client/regulars/stop", { method: "POST", body: JSON.stringify({ regular_id: regularId }) });
+            showToast("Абонемент остановлен");
+          } catch (e) { showToast("Не получилось"); }
+          renderClientMy();
+        });
       };
     });
     content.querySelectorAll("[data-repeat]").forEach((row) => {

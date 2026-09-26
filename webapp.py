@@ -105,6 +105,7 @@ def slot_to_dict(row) -> dict:
         "service_name": row["service_name"] if "service_name" in row.keys() else None,
         "staff_name": row["staff_name"] if "staff_name" in row.keys() else None,
         "no_show": bool(row["no_show"]) if "no_show" in row.keys() else False,
+        "is_regular": bool(row["regular_id"]) if "regular_id" in row.keys() and row["regular_id"] else False,
     }
 
 
@@ -482,6 +483,106 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if db.count_staff(user["id"]) <= 1:
             return web.json_response({"error": "last staff"}, status=409)
         db.delete_staff(staff["id"])
+        return web.json_response({"ok": True})
+
+    # ---------- постоянные записи (абонементы) ----------
+
+    def regular_to_dict(row) -> dict:
+        return {
+            "id": row["id"],
+            "staff_id": row["staff_id"],
+            "staff_name": row["staff_name"],
+            "weekday": row["weekday"],
+            "hh": row["hh"],
+            "mm": row["mm"],
+            "time": f"{row['hh']:02d}:{row['mm']:02d}",
+            "service_id": row["service_id"],
+            "service_name": row["service_name"],
+            "client_id": row["client_id"],
+            "client_name": row["client_name"],
+            "client_username": row["client_username"] if "client_username" in row.keys() else None,
+            "invite_link": f"https://t.me/{bot_username}?start=reg_{row['invite_token']}",
+        }
+
+    @require_auth
+    async def handle_regulars_list(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        regulars = [regular_to_dict(r) for r in db.list_regulars(user["id"])]
+        return web.json_response({"regulars": regulars})
+
+    @require_auth
+    async def handle_regulars_add(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        staff = _staff_for_provider(user["id"], body.get("staff_id"))
+        if not staff:
+            return web.json_response({"error": "bad staff_id"}, status=400)
+        try:
+            weekday = int(body.get("weekday"))
+            hh = int(body.get("hh"))
+            mm = int(body.get("mm"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad time"}, status=400)
+        if not (0 <= weekday <= 6 and 0 <= hh <= 23 and 0 <= mm <= 59):
+            return web.json_response({"error": "bad time"}, status=400)
+        service_id = body.get("service_id")
+        service = db.get_service(int(service_id)) if service_id else None
+        client_name = (body.get("client_name") or "").strip()[:80] or None
+
+        regular_id, _token = db.add_regular(
+            user["id"], staff["id"], staff["name"], weekday, hh, mm,
+            service_id=service["id"] if service else None,
+            service_name=service["name"] if service else None,
+            client_name=client_name,
+        )
+        regular = db.get_regular(regular_id)
+        db.generate_regular_occurrences(regular, weeks_ahead=RECUR_WEEKS)
+        return web.json_response({"ok": True, "id": regular_id, "regular": regular_to_dict(db.get_regular(regular_id))})
+
+    @require_auth
+    async def handle_regulars_stop(request: web.Request, user: dict) -> web.Response:
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        regular = db.get_regular(int(body.get("id", 0)))
+        if not regular or regular["trainer_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        cancelled = db.cancel_regular_series(regular["id"])
+        client_id = regular["client_id"]
+        if client_id:
+            try:
+                await bot.send_message(
+                    client_id,
+                    f"⚠️ Специалист остановил(а) постоянную запись "
+                    f"({DAYS_RU[regular['weekday']]}, {regular['hh']:02d}:{regular['mm']:02d}). "
+                    f"Будущие занятия по ней отменены.",
+                )
+            except Exception:
+                logger.warning("Не удалось уведомить клиента %s об остановке абонемента", client_id)
+        return web.json_response({"ok": True, "cancelled": len(cancelled)})
+
+    @require_auth
+    async def handle_client_regular_stop(request: web.Request, user: dict) -> web.Response:
+        body = await request.json()
+        try:
+            regular_id = int(body.get("regular_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad regular_id"}, status=400)
+        regular = db.get_regular(regular_id)
+        if not regular or regular["client_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        db.cancel_regular_series(regular_id)
+        try:
+            full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Клиент"
+            await bot.send_message(
+                regular["trainer_id"],
+                f"⚠️ {esc(full_name)} остановил(а) постоянную запись "
+                f"({DAYS_RU[regular['weekday']]}, {regular['hh']:02d}:{regular['mm']:02d}).",
+            )
+        except Exception:
+            logger.warning("Не удалось уведомить специалиста об остановке абонемента клиентом")
         return web.json_response({"ok": True})
 
     # ---------- расписание специалиста (в разрезе конкретного сотрудника) ----------
@@ -1159,6 +1260,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             "staff_id": r["staff_id"] if "staff_id" in r.keys() else None,
             "staff_name": r["staff_name"] if "staff_name" in r.keys() else None,
             "discount_label": r["discount_label"] if "discount_label" in r.keys() else None,
+            "regular_id": r["regular_id"] if "regular_id" in r.keys() else None,
         }
 
     @require_auth
@@ -1197,6 +1299,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/branches/add", handle_branches_add)
     app.router.add_post("/api/provider/branches/update", handle_branches_update)
     app.router.add_post("/api/provider/branches/delete", handle_branches_delete)
+    app.router.add_get("/api/provider/regulars", handle_regulars_list)
+    app.router.add_post("/api/provider/regulars/add", handle_regulars_add)
+    app.router.add_post("/api/provider/regulars/stop", handle_regulars_stop)
+    app.router.add_post("/api/client/regulars/stop", handle_client_regular_stop)
     app.router.add_get("/api/provider/staff", handle_staff_list)
     app.router.add_post("/api/provider/staff/add", handle_staff_add)
     app.router.add_post("/api/provider/staff/update", handle_staff_update)

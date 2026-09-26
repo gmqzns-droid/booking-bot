@@ -1,4 +1,5 @@
 """Слой работы с базой данных (SQLite). v4: контакты, привязка клиента к тренеру, часовой пояс."""
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -125,6 +126,27 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS regulars (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trainer_id INTEGER NOT NULL,
+                staff_id INTEGER NOT NULL,
+                staff_name TEXT,
+                weekday INTEGER NOT NULL,     -- 0=Пн .. 6=Вс (как datetime.weekday())
+                hh INTEGER NOT NULL,
+                mm INTEGER NOT NULL,
+                service_id INTEGER,
+                service_name TEXT,
+                client_id INTEGER,            -- NULL, пока ученик не открыл ссылку-приглашение
+                client_name TEXT,
+                client_username TEXT,
+                invite_token TEXT NOT NULL UNIQUE,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS waitlist (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trainer_id INTEGER NOT NULL,
@@ -215,6 +237,7 @@ def init_db():
         _ensure_column(conn, "staff", "branch_id", "INTEGER")
         _ensure_column(conn, "trainers", "phone", "TEXT")
         _ensure_column(conn, "branches", "phone", "TEXT")
+        _ensure_column(conn, "slots", "regular_id", "INTEGER")
 
         # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
         # специалист одновременно, вторая привязка тихо затирала первую). Переносим
@@ -816,6 +839,163 @@ def count_clients(trainer_id: int) -> int:
     return row["c"] if row else 0
 
 
+# ---------- Постоянные записи (абонементы) ----------
+# Специалист заводит ученика/клиента на фиксированное время в неделю (например, каждый
+# понедельник в 18:00) и делится персональной ссылкой-приглашением; когда ученик открывает
+# её в первый раз, он привязывается именно к этому расписанию. Технически абонемент — это
+# просто "фабрика" обычных слотов (slots.regular_id указывает, из какого абонемента слот
+# появился), поэтому напоминания, отмена/перенос отдельного занятия, отзывы и т.д. работают
+# для таких записей ровно так же, как для разовых — без отдельного кода.
+
+def _gen_invite_token() -> str:
+    return secrets.token_urlsafe(9)
+
+
+def add_regular(
+    trainer_id: int, staff_id: int, staff_name: str, weekday: int, hh: int, mm: int,
+    service_id: int | None = None, service_name: str | None = None, client_name: str | None = None,
+) -> tuple[int, str]:
+    token = _gen_invite_token()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO regulars (trainer_id, staff_id, staff_name, weekday, hh, mm, "
+            "service_id, service_name, client_name, invite_token, active, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
+            (trainer_id, staff_id, staff_name, weekday, hh, mm, service_id, service_name,
+             client_name, token, now_msk().isoformat()),
+        )
+        return cur.lastrowid, token
+
+
+def get_regular(regular_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM regulars WHERE id=?", (regular_id,)).fetchone()
+
+
+def get_regular_by_token(token: str):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM regulars WHERE invite_token=?", (token,)).fetchone()
+
+
+def list_regulars(trainer_id: int, staff_id: int | None = None, active_only: bool = True):
+    with get_conn() as conn:
+        q = "SELECT * FROM regulars WHERE trainer_id=?"
+        params: list = [trainer_id]
+        if staff_id is not None:
+            q += " AND staff_id=?"
+            params.append(staff_id)
+        if active_only:
+            q += " AND active=1"
+        q += " ORDER BY weekday, hh, mm"
+        return conn.execute(q, params).fetchall()
+
+
+def link_regular_client(regular_id: int, client_id: int, client_name: str, client_username: str | None):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE regulars SET client_id=?, client_name=?, client_username=? WHERE id=?",
+            (client_id, client_name, client_username, regular_id),
+        )
+
+
+def cancel_regular_series(regular_id: int):
+    """Останавливает абонемент целиком: гасит паттерн (active=0) и отменяет ещё не прошедшие
+    сгенерированные вхождения (и свободные-зарезервированные, и уже занятые). Возвращает
+    отменённые строки — вызывающий код уведомляет по ним клиента/специалиста."""
+    with get_conn() as conn:
+        now = now_msk().strftime("%Y-%m-%d %H:%M")
+        rows = conn.execute(
+            "SELECT * FROM slots WHERE regular_id=? AND status IN ('free','booked') AND slot_dt >= ?",
+            (regular_id, now),
+        ).fetchall()
+        conn.execute(
+            "UPDATE slots SET status='cancelled' WHERE regular_id=? AND status IN ('free','booked') AND slot_dt >= ?",
+            (regular_id, now),
+        )
+        conn.execute("UPDATE regulars SET active=0 WHERE id=?", (regular_id,))
+    return rows
+
+
+def count_regulars(trainer_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM regulars WHERE trainer_id=? AND active=1", (trainer_id,)
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def add_regular_slot(
+    trainer_id: int, staff_id: int, staff_name: str, slot_dt: str, regular_id: int,
+    client_id: int | None = None, client_name: str | None = None, client_username: str | None = None,
+    service_id: int | None = None, service_name: str | None = None,
+) -> bool:
+    """Одно вхождение абонемента. Если у абонемента уже есть привязанный ученик — слот
+    создаётся сразу занятым им; иначе — свободным, но помеченным regular_id (список
+    свободных слотов для случайной записи его не показывает, см. list_free_*)."""
+    status = "booked" if client_id else "free"
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT INTO slots (trainer_id, staff_id, staff_name, slot_dt, status, "
+                "client_id, client_name, client_username, service_id, service_name, "
+                "regular_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (trainer_id, staff_id, staff_name, slot_dt, status, client_id, client_name,
+                 client_username, service_id, service_name, regular_id, now_msk().isoformat()),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def generate_regular_occurrences(regular, weeks_ahead: int = 8) -> int:
+    """Досоздаёт вхождения абонемента на ближайшие `weeks_ahead` недель вперёд от сегодня
+    (уже существующие даты просто пропускаются благодаря уникальному индексу слотов).
+    Вызывается сразу при создании абонемента/привязке ученика, а затем ежедневно из
+    планировщика — чтобы окно вперёд не сжималось со временем."""
+    today = now_msk().date()
+    delta = (regular["weekday"] - today.weekday()) % 7
+    base = today + timedelta(days=delta)
+    added = 0
+    for week in range(weeks_ahead):
+        d = base + timedelta(weeks=week)
+        slot_dt = f"{d:%Y-%m-%d} {regular['hh']:02d}:{regular['mm']:02d}"
+        ok = add_regular_slot(
+            regular["trainer_id"], regular["staff_id"], regular["staff_name"], slot_dt,
+            regular["id"],
+            client_id=regular["client_id"],
+            client_name=regular["client_name"],
+            client_username=regular["client_username"] if "client_username" in regular.keys() else None,
+            service_id=regular["service_id"], service_name=regular["service_name"],
+        )
+        if ok:
+            added += 1
+    return added
+
+
+def generate_all_regular_occurrences(weeks_ahead: int = 8) -> int:
+    """Ежедневная задача планировщика — продлевает окно вперёд для ВСЕХ активных
+    абонементов сразу (и уже с учеником, и ещё ждущих принятия ссылки)."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM regulars WHERE active=1").fetchall()
+    total = 0
+    for r in rows:
+        total += generate_regular_occurrences(r, weeks_ahead)
+    return total
+
+
+def book_existing_regular_slots(regular_id: int, client_id: int, client_name: str, client_username: str | None) -> int:
+    """Переводит уже сгенерированные, ещё не прошедшие свободные слоты этого абонемента
+    в занятые этим клиентом — вызывается один раз, когда ученик впервые открывает ссылку."""
+    with get_conn() as conn:
+        now = now_msk().strftime("%Y-%m-%d %H:%M")
+        cur = conn.execute(
+            "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=? "
+            "WHERE regular_id=? AND status='free' AND slot_dt >= ?",
+            (client_id, client_name, client_username, regular_id, now),
+        )
+        return cur.rowcount
+
+
 # ---------- Слоты ----------
 
 def add_slot(trainer_id: int, staff_id: int, staff_name: str, slot_dt: str) -> bool:
@@ -832,11 +1012,14 @@ def add_slot(trainer_id: int, staff_id: int, staff_name: str, slot_dt: str) -> b
 
 
 def list_free_days(trainer_id: int, staff_id: int, limit_days: int = 14):
-    """Дни (YYYY-MM-DD), на которые у конкретного сотрудника есть свободные слоты."""
+    """Дни (YYYY-MM-DD), на которые у конкретного сотрудника есть свободные слоты.
+    Слоты, зарезервированные под абонемент (regular_id не пуст), сюда не попадают —
+    это время придержано под конкретного будущего постоянного ученика, а не для
+    случайной записи любым клиентом."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT DISTINCT substr(slot_dt, 1, 10) AS day FROM slots "
-            "WHERE trainer_id=? AND staff_id=? AND status='free' AND slot_dt >= ? "
+            "WHERE trainer_id=? AND staff_id=? AND status='free' AND regular_id IS NULL AND slot_dt >= ? "
             "ORDER BY day LIMIT ?",
             (trainer_id, staff_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit_days),
         ).fetchall()
@@ -846,7 +1029,7 @@ def list_free_days(trainer_id: int, staff_id: int, limit_days: int = 14):
 def list_free_slots_for_day(trainer_id: int, staff_id: int, day: str):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM slots WHERE trainer_id=? AND staff_id=? AND status='free' "
+            "SELECT * FROM slots WHERE trainer_id=? AND staff_id=? AND status='free' AND regular_id IS NULL "
             "AND substr(slot_dt,1,10)=? AND slot_dt >= ? ORDER BY slot_dt",
             (trainer_id, staff_id, day, now_msk().strftime("%Y-%m-%d %H:%M")),
         ).fetchall()
