@@ -96,19 +96,22 @@ def open_app_kb() -> InlineKeyboardMarkup | None:
     )
 
 
+PERSISTENT_BTN_TEXT = "🚀 Открыть Запишись"
+
+
 def persistent_kb() -> ReplyKeyboardMarkup | None:
-    """Кнопка входа, закреплённая у поля ввода (обычная reply-клавиатура, а не инлайн под
+    """Кнопка, закреплённая у поля ввода (обычная reply-клавиатура, а не инлайн под
     сообщением) — не уезжает вверх, когда приходят новые сообщения/уведомления, и остаётся
-    доступной в любой момент, а не только сразу под тем сообщением, где её показали."""
+    доступной в любой момент. Специально БЕЗ web_app: на практике Telegram не всегда отдаёт
+    initData мини-приложению, открытому через web_app-кнопку закреплённой клавиатуры (даже
+    с уникальным URL при каждом показе — проверено), а без initData наш сервер не может
+    авторизовать пользователя. Поэтому кнопка просто отправляет текстовым сообщением,
+    а на него отвечаем свежей inline-кнопкой (handle_open_app_button ниже) — этот путь
+    (инлайн web_app-кнопка под свежим сообщением) проверенно надёжно передаёт initData."""
     if not MINI_APP_URL:
         return None
-    # Ведём не напрямую на index.html, а через /miniapp/open — сервер редиректит оттуда
-    # на index.html со свежей меткой времени в query при каждом нажатии, иначе один и тот
-    # же статический URL закреплённой кнопки иногда открывается Telegram без initData
-    # (тот же приём, что и в open_app_kb() для инлайн-кнопки).
-    url = f"{MINI_APP_URL}/miniapp/open"
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🚀 Открыть Запишись", web_app=WebAppInfo(url=url))]],
+        keyboard=[[KeyboardButton(text=PERSISTENT_BTN_TEXT)]],
         resize_keyboard=True,
         is_persistent=True,
     )
@@ -138,7 +141,7 @@ async def cmd_start(message: Message, command: CommandObject):
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
-    kb = persistent_kb() or open_app_kb()
+    kb = open_app_kb()
     await message.answer(
         "Всё управление и запись — внутри приложения: жми кнопку ниже.\n\n"
         f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}",
@@ -197,6 +200,18 @@ async def cb_review_rating(callback: CallbackQuery):
     except Exception:
         pass
     await callback.answer()
+
+
+@dp.message(F.text == PERSISTENT_BTN_TEXT)
+async def handle_open_app_button(message: Message):
+    """Закреплённая кнопка не открывает мини-приложение сама — см. комментарий в
+    persistent_kb(). Вместо этого отвечаем свежим сообщением с инлайн-кнопкой того же
+    вида, что и раньше работал надёжно (уникальный ?_t= на каждый показ)."""
+    kb = open_app_kb()
+    if not kb:
+        await message.answer("⚠️ Приложение временно недоступно, попробуй чуть позже.")
+        return
+    await message.answer("Жми, чтобы открыть 👇", reply_markup=kb)
 
 
 @dp.message(F.text & ~F.text.startswith("/"))
