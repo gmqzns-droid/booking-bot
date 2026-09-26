@@ -492,13 +492,7 @@
         if (booked) {
           openBookedSlotActionsSheet(slotsById[id]);
         } else {
-          showConfirm("Удалить этот слот?", async () => {
-            try {
-              await api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: id }) });
-              haptic("success");
-              renderProviderSchedule();
-            } catch (e) { showToast("Не получилось"); }
-          });
+          openFreeSlotActionsSheet(slotsById[id]);
         }
       };
     });
@@ -539,6 +533,28 @@
     };
   }
 
+  function openFreeSlotActionsSheet(slot) {
+    if (!slot) return;
+    openSheet(`
+      <div class="sheet-title">${escapeHtml(fmtDay(slot.date))}, ${slot.time}</div>
+      <button class="btn btn-secondary btn-block" id="act-manual-book" style="margin-bottom:8px">➕ Записать участника вручную</button>
+      <button class="btn btn-danger btn-block" id="act-delete">Удалить слот</button>
+    `);
+    el("act-manual-book").onclick = () => {
+      openManualBookSheet(slot, () => renderProviderSchedule());
+    };
+    el("act-delete").onclick = () => {
+      closeSheet();
+      showConfirm("Удалить этот слот?", async () => {
+        try {
+          await api("/api/provider/slots/cancel", { method: "POST", body: JSON.stringify({ slot_id: slot.id }) });
+          haptic("success");
+          renderProviderSchedule();
+        } catch (e) { showToast("Не получилось"); }
+      });
+    };
+  }
+
   function openGroupSlotSheet(seats) {
     if (!seats || !seats.length) return;
     const first = seats[0];
@@ -564,8 +580,21 @@
       html += '<p class="muted">Пока никто не записался.</p>';
     }
 
+    if (free) {
+      html += '<button class="btn btn-secondary btn-block" id="group-add-manual" style="margin-bottom:8px">➕ Записать участника вручную</button>';
+    }
     html += '<button class="btn btn-danger btn-block" id="group-cancel-all">Отменить всё занятие</button>';
     openSheet(html);
+
+    if (el("group-add-manual")) {
+      el("group-add-manual").onclick = () => {
+        const freeSeat = seats.find((s) => s.status !== "booked");
+        if (!freeSeat) return;
+        openManualBookSheet(freeSeat, () => {
+          renderProviderSchedule();
+        });
+      };
+    }
 
     el("sheet-card").querySelectorAll("[data-group-cancel]").forEach((btn) => {
       btn.onclick = () => {
@@ -593,6 +622,74 @@
           renderProviderSchedule();
         } catch (e) { showToast("Не получилось отменить всё занятие"); }
       });
+    };
+  }
+
+  async function openManualBookSheet(slot, onDone) {
+    openSheet(`<div class="sheet-title">Записать участника</div><div class="center" style="padding:24px 0"><div class="spinner"></div></div>`);
+
+    let clientsData, servicesData;
+    try {
+      const results = await Promise.all([
+        api("/api/provider/clients", { method: "GET" }),
+        api("/api/provider/services", { method: "GET" }),
+      ]);
+      clientsData = results[0];
+      servicesData = results[1];
+    } catch (e) {
+      openSheet(`<div class="sheet-title">Записать участника</div><p class="muted">Не удалось загрузить данные</p>`);
+      return;
+    }
+
+    const clients = (clientsData.clients || []).filter((c) => !c.blocked);
+    const services = servicesData.services || [];
+
+    const clientOptions = `<option value="">— Новый человек (без бота) —</option>` +
+      clients.map((c) =>
+        `<option value="${c.id}">${escapeHtml(clientDisplayName(c.name, c.custom_name))}${c.username ? " (@" + escapeHtml(c.username) + ")" : ""}</option>`
+      ).join("");
+    const serviceOptions = `<option value="">Без услуги</option>` +
+      services.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+
+    openSheet(`
+      <div class="sheet-title">${escapeHtml(fmtDay(slot.date))}, ${slot.time}</div>
+      <div class="field">
+        <label class="field-label">Клиент</label>
+        <select class="input" id="manual-client">${clientOptions}</select>
+      </div>
+      <div class="field" id="manual-name-field">
+        <label class="field-label">Имя</label>
+        <input class="input" id="manual-name" maxlength="100" placeholder="Как записать?">
+      </div>
+      <div class="field">
+        <label class="field-label">Услуга</label>
+        <select class="input" id="manual-service">${serviceOptions}</select>
+      </div>
+      <button class="btn btn-primary btn-block" id="manual-submit">Записать</button>
+    `);
+
+    const nameField = el("manual-name-field");
+    const clientSel = el("manual-client");
+    const syncNameField = () => { nameField.style.display = clientSel.value ? "none" : ""; };
+    syncNameField();
+    clientSel.onchange = syncNameField;
+
+    el("manual-submit").onclick = async () => {
+      const clientId = clientSel.value;
+      const name = (el("manual-name").value || "").trim();
+      if (!clientId && !name) { showToast("Введи имя"); return; }
+      const serviceId = el("manual-service").value;
+      const body = { slot_id: slot.id };
+      if (clientId) body.client_id = clientId; else body.name = name;
+      if (serviceId) body.service_id = serviceId;
+      try {
+        await api("/api/provider/slots/book_manual", { method: "POST", body: JSON.stringify(body) });
+        haptic("success");
+        closeSheet();
+        if (onDone) onDone(); else renderProviderSchedule();
+      } catch (e) {
+        showToast(e.status === 409 ? "Слот уже занят" : "Не получилось записать");
+      }
     };
   }
 

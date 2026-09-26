@@ -716,6 +716,83 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return web.json_response({"ok": True})
 
     @require_auth
+    async def handle_slot_book_manual(request: web.Request, user: dict) -> web.Response:
+        """Специалист сам вписывает участника в свободный слот (обычный или место в групповом
+        занятии) — либо выбирая уже привязанного клиента (client_id), либо просто вписывая имя
+        человека, который ботом ещё не пользовался (name)."""
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        body = await request.json()
+        try:
+            slot_id = int(body.get("slot_id"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad slot_id"}, status=400)
+        slot = db.get_slot(slot_id)
+        if not slot or slot["trainer_id"] != user["id"]:
+            return web.json_response({"error": "not found"}, status=404)
+        if slot["status"] != "free":
+            return web.json_response({"error": "slot taken"}, status=409)
+
+        service = None
+        raw_service_id = body.get("service_id")
+        if raw_service_id:
+            try:
+                service = db.get_service(int(raw_service_id))
+            except (TypeError, ValueError):
+                service = None
+            if not service or service["trainer_id"] != user["id"]:
+                return web.json_response({"error": "bad service_id"}, status=400)
+
+        client_id = None
+        client_username = None
+        raw_client_id = body.get("client_id")
+        if raw_client_id:
+            try:
+                client_id = int(raw_client_id)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "bad client_id"}, status=400)
+            link = db.get_client_link(user["id"], client_id)
+            if not link:
+                return web.json_response({"error": "not linked"}, status=400)
+            client_name = (link["custom_name"] if "custom_name" in link.keys() else None) or link["name"]
+            client_username = link["username"]
+        else:
+            client_name = (body.get("name") or "").strip()[:100]
+            if not client_name:
+                return web.json_response({"error": "name required"}, status=400)
+
+        if service and service["duration_min"]:
+            conflict = db.find_overlapping_booked_slot(
+                slot["trainer_id"], slot["staff_id"], slot["slot_dt"], service["duration_min"],
+                exclude_slot_id=slot["id"],
+                exclude_group_id=slot["group_id"] if "group_id" in slot.keys() else None,
+            )
+            if conflict:
+                return web.json_response({"error": "slot_conflict"}, status=409)
+
+        ok = db.book_slot(
+            slot["id"], client_id, client_name, client_username,
+            service["id"] if service else None,
+            service["name"] if service else None,
+        )
+        if not ok:
+            return web.json_response({"error": "slot taken"}, status=409)
+
+        if client_id:
+            staff_name = slot["staff_name"] if "staff_name" in slot.keys() and slot["staff_name"] else None
+            staff_line = f" к <b>{esc(staff_name)}</b>" if staff_name else ""
+            try:
+                await bot.send_message(
+                    client_id,
+                    f"✅ Специалист записал тебя{staff_line} на <b>{fmt_slot(slot['slot_dt'])}</b>"
+                    f"{' (' + esc(service['name']) + ')' if service else ''}.",
+                )
+            except Exception:
+                logger.warning("Не удалось уведомить клиента %s о ручной записи", client_id)
+
+        return web.json_response({"ok": True})
+
+    @require_auth
     async def handle_slot_reschedule(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
@@ -1338,6 +1415,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/slots/add", handle_slot_add)
     app.router.add_post("/api/provider/slots/add_recurring", handle_slot_add_recurring)
     app.router.add_post("/api/provider/slots/cancel", handle_slot_cancel)
+    app.router.add_post("/api/provider/slots/book_manual", handle_slot_book_manual)
     app.router.add_post("/api/provider/slots/reschedule", handle_slot_reschedule)
     app.router.add_post("/api/provider/schedule/close_range", handle_schedule_close_range)
     app.router.add_post("/api/provider/slots/noshow", handle_slot_noshow)

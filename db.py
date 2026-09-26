@@ -513,7 +513,7 @@ def slots_needing_review(hours_after: int = 2, max_age_hours: int = 26):
         floor = (now - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M")
         rows = conn.execute(
             "SELECT * FROM slots WHERE status='booked' AND no_show=0 AND review_requested=0 "
-            "AND slot_dt <= ? AND slot_dt > ?",
+            "AND client_id IS NOT NULL AND slot_dt <= ? AND slot_dt > ?",
             (cutoff, floor),
         ).fetchall()
     return rows
@@ -830,6 +830,16 @@ def set_client_blocked(trainer_id: int, client_id: int, blocked: bool) -> bool:
             (1 if blocked else 0, client_id, trainer_id),
         )
         return cur.rowcount > 0
+
+
+def get_client_link(trainer_id: int, client_id: int):
+    """Строка привязки конкретного клиента к конкретному специалисту (или None, если не
+    привязан) — используется, когда специалист сам вписывает клиента в слот вручную и
+    нужно проверить, что выбранный клиент действительно его, и взять его имя/юзернейм."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM client_links WHERE client_id=? AND trainer_id=?", (client_id, trainer_id)
+        ).fetchone()
 
 
 def is_client_blocked(trainer_id: int, client_id: int) -> bool:
@@ -1351,7 +1361,7 @@ def list_client_past_bookings(client_id: int, limit: int = 10):
 def slots_needing_reminder(field: str, window_start: str, window_end: str):
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT * FROM slots WHERE status='booked' AND {field}=0 "
+            f"SELECT * FROM slots WHERE status='booked' AND {field}=0 AND client_id IS NOT NULL "
             f"AND slot_dt BETWEEN ? AND ?",
             (window_start, window_end),
         ).fetchall()
