@@ -1,28 +1,28 @@
 :root {
-  --tg-bg: #FBF5ED;
-  --tg-card: #FFFDF9;
-  --tg-text: #3B2E26;
-  --tg-hint: #A08972;
-  --tg-hint-soft: #C2AB98;
-  --tg-link: #C97B5D;
-  --tg-button: #C97B5D;
-  --tg-button-text: #FFFDF9;
-  --tg-secondary-bg: #F3E5D8;
-  --tg-destructive: #B14636;
-  --tg-destructive-bg: rgba(196, 72, 59, 0.10);
+  --tg-bg: #EDEAE2;
+  --tg-card: #FAF8F4;
+  --tg-text: #2B2926;
+  --tg-hint: #8C8477;
+  --tg-hint-soft: #B7AF9E;
+  --tg-link: #8F8060;
+  --tg-button: #2B2926;
+  --tg-button-text: #FAF8F4;
+  --tg-secondary-bg: #F1EDE3;
+  --tg-destructive: #A14B3D;
+  --tg-destructive-bg: rgba(161, 75, 61, 0.08);
 
-  --font-serif: 'Playfair Display', Georgia, serif;
+  --font-serif: 'Cormorant', Georgia, serif;
 
-  --radius-lg: 24px;
-  --radius-md: 16px;
-  --radius-sm: 12px;
+  --radius-lg: 10px;
+  --radius-md: 8px;
+  --radius-sm: 8px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
-  --card-border: rgba(201, 123, 93, 0.14);
-  --card-shadow: 0 16px 32px -14px rgba(120, 90, 60, 0.20);
+  --card-border: #DCD6C9;
+  --card-shadow: none;
 }
 
 * { box-sizing: border-box; }
@@ -56,11 +56,11 @@ body {
 /* ---------- Загрузка ---------- */
 
 .spinner {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  border: 3px solid var(--card-border);
-  border-top-color: var(--tg-button);
+  border: 2px solid var(--card-border);
+  border-top-color: var(--tg-link);
   animation: spin 0.8s linear infinite;
 }
 
@@ -72,46 +72,49 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 22px;
+  gap: 24px;
 }
 
 .loading-wordmark {
   font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 700;
-  font-size: 34px;
+  font-weight: 500;
+  font-size: 26px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
   color: var(--tg-text);
-  letter-spacing: -0.01em;
   animation: loading-fade 1.6s ease-in-out infinite;
 }
 
 @keyframes loading-fade {
-  0%, 100% { opacity: 0.55; }
+  0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
 
 /* ---------- Верхняя панель ---------- */
 
 .topbar {
-  padding: 26px 18px 16px;
+  padding: 28px 20px 18px;
   background: var(--tg-bg);
   position: sticky;
   top: 0;
   z-index: 5;
+  text-align: center;
 }
 
 .topbar-title {
   font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-size: 22px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
   color: var(--tg-text);
 }
 
 .topbar-subtitle {
-  margin-top: 4px;
-  font-size: 13.5px;
+  margin-top: 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--tg-hint);
 }
 
@@ -119,7 +122,7 @@ body {
 
 .content {
   flex: 1;
-  padding: 10px 14px 90px;
+  padding: 10px 16px 90px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -130,9 +133,9 @@ body {
   padding: 48px 24px;
 }
 
-.empty-emoji { font-size: 40px; margin-bottom: 10px; }
-.empty-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
-.empty-text { font-size: 14px; color: var(--tg-hint); line-height: 1.4; }
+.empty-emoji { font-size: 36px; margin-bottom: 10px; opacity: 0.7; }
+.empty-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+.empty-text { font-size: 13.5px; color: var(--tg-hint); line-height: 1.5; }
 
 /* ---------- Карточки ---------- */
 
@@ -145,9 +148,12 @@ body {
 }
 
 .card-title {
-  font-size: 15px;
+  font-size: 11px;
   font-weight: 600;
-  margin-bottom: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tg-hint);
+  margin-bottom: 12px;
 }
 
 .card-row {
@@ -161,7 +167,7 @@ body {
 
 .card-row:first-child { border-top: none; padding-top: 4px; }
 
-.muted { color: var(--tg-hint); font-size: 13px; margin: 0; line-height: 1.45; }
+.muted { color: var(--tg-hint); font-size: 13px; margin: 0; line-height: 1.5; }
 
 /* ---------- Поля ввода ---------- */
 
@@ -170,10 +176,12 @@ body {
 
 .field-label {
   display: block;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
-  margin-bottom: 6px;
-  color: var(--tg-text);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 7px;
+  color: var(--tg-hint);
 }
 
 .field-hint {
@@ -187,13 +195,13 @@ body {
   padding: 12px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--card-border);
-  background: #FBF5ED;
+  background: var(--tg-secondary-bg);
   color: var(--tg-text);
   font-size: 16px; /* >=16px не даёт iOS Safari/WebView автозумить при фокусе на поле */
   outline: none;
 }
 
-.input:focus, .textarea:focus { border-color: var(--tg-button); }
+.input:focus, .textarea:focus { border-color: var(--tg-link); }
 
 .input-row { display: flex; gap: 8px; }
 .input-row .input { flex: 1; }
@@ -201,11 +209,13 @@ body {
 /* ---------- Кнопки ---------- */
 
 .btn {
-  padding: 12px 16px;
+  padding: 13px 16px;
   border-radius: var(--radius-sm);
   border: none;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -213,22 +223,22 @@ body {
 .btn-block { width: 100%; }
 
 .btn-primary { background: var(--tg-button); color: var(--tg-button-text); }
-.btn-secondary { background: var(--tg-secondary-bg); color: #8A5A3F; }
-.btn-danger { background: var(--tg-destructive-bg); color: var(--tg-destructive); }
-.btn-ghost { background: transparent; color: var(--tg-link); padding: 8px 10px; }
+.btn-secondary { background: var(--tg-secondary-bg); color: var(--tg-text); border: 1px solid var(--card-border); }
+.btn-danger { background: transparent; color: var(--tg-destructive); border: 1px solid var(--tg-destructive); }
+.btn-ghost { background: transparent; color: var(--tg-link); padding: 8px 10px; text-transform: none; letter-spacing: 0; font-weight: 600; }
 
-.btn-sm { padding: 8px 12px; font-size: 13px; border-radius: 10px; }
+.btn-sm { padding: 8px 12px; font-size: 11px; border-radius: var(--radius-sm); }
 
-.btn:active { opacity: 0.75; }
+.btn:active { opacity: 0.7; }
 
 .icon-btn {
-  border: none;
+  border: 1px solid var(--card-border);
   background: var(--tg-secondary-bg);
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
   padding: 6px;
-  border-radius: 14px;
-  color: var(--tg-button);
+  border-radius: var(--radius-sm);
+  color: var(--tg-text);
 }
 
 /* ---------- Табы / чипы ---------- */
@@ -247,15 +257,15 @@ body {
   flex: 0 0 auto;
   padding: 9px 14px;
   border-radius: 999px;
-  background: var(--tg-secondary-bg);
-  border: 1px solid transparent;
+  background: transparent;
+  border: 1px solid var(--card-border);
   color: var(--tg-text);
-  font-size: 13.5px;
+  font-size: 13px;
   white-space: nowrap;
   cursor: pointer;
 }
 
-.chip.active { background: var(--tg-button); color: var(--tg-button-text); }
+.chip.active { background: var(--tg-button); color: var(--tg-button-text); border-color: var(--tg-button); }
 
 /* ---------- Сетка слотов ---------- */
 
@@ -271,7 +281,7 @@ body {
   border: 1px solid var(--card-border);
   background: var(--tg-card);
   color: var(--tg-text);
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 500;
   cursor: pointer;
 }
@@ -292,21 +302,23 @@ body {
 .list-item:first-child { border-top: none; }
 
 .list-item-main { min-width: 0; }
-.list-item-title { font-size: 14.5px; font-weight: 600; }
-.list-item-sub { font-size: 12.5px; color: var(--tg-hint); margin-top: 2px; }
+.list-item-title { font-size: 14.5px; font-weight: 500; }
+.list-item-sub { font-size: 12px; color: var(--tg-hint); margin-top: 3px; }
 
 .badge {
   display: inline-block;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
+  letter-spacing: 0.04em;
   padding: 4px 10px;
   border-radius: 999px;
-  background: var(--tg-secondary-bg);
-  color: #8A5A3F;
+  background: transparent;
+  border: 1px solid var(--card-border);
+  color: var(--tg-hint);
 }
 
-.badge-warn { background: var(--tg-destructive-bg); color: var(--tg-destructive); }
-.badge-accent { background: var(--tg-button); color: var(--tg-button-text); }
+.badge-warn { background: transparent; color: var(--tg-destructive); border-color: var(--tg-destructive); }
+.badge-accent { background: transparent; color: var(--tg-link); border-color: var(--tg-link); }
 
 /* ---------- Нижняя навигация ---------- */
 
@@ -325,24 +337,27 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   padding: 6px 4px;
   border: none;
   background: none;
   color: var(--tg-hint-soft);
-  font-size: 11px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   cursor: pointer;
 }
 
 .tab-item .tab-icon {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.tab-item .tab-icon svg { width: 22px; height: 22px; }
-.tab-item.active { color: var(--tg-button); }
+.tab-item .tab-icon svg { width: 19px; height: 19px; stroke-width: 1.5; }
+.tab-item.active { color: var(--tg-text); }
+.tab-item.active .tab-icon svg { stroke: var(--tg-link); }
 .tab-item.active .tab-label { font-weight: 600; }
 
 /* ---------- Overlay: подтверждение / нижний лист ---------- */
@@ -350,7 +365,7 @@ body {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(59, 46, 38, 0.38);
+  background: rgba(43, 41, 38, 0.35);
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -363,17 +378,17 @@ body {
   width: 100%;
   max-width: 480px;
   background: var(--tg-card);
-  border-radius: 24px 24px 0 0;
+  border-radius: 14px 14px 0 0;
   padding: 20px 16px calc(24px + env(safe-area-inset-bottom));
   max-height: 82vh;
   overflow-y: auto;
 }
 
 .confirm-text {
-  font-size: 16px;
+  font-size: 15px;
   margin-bottom: 16px;
   text-align: center;
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 .confirm-actions { display: flex; gap: 10px; }
@@ -381,10 +396,11 @@ body {
 
 .sheet-title {
   font-family: var(--font-serif);
-  font-style: italic;
-  font-size: 19px;
-  font-weight: 700;
-  margin-bottom: 14px;
+  font-size: 20px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 16px;
 }
 
 /* ---------- Toast ---------- */
@@ -398,7 +414,7 @@ body {
   color: var(--tg-card);
   padding: 10px 18px;
   border-radius: 999px;
-  font-size: 13.5px;
+  font-size: 13px;
   z-index: 30;
   max-width: 88vw;
   text-align: center;
@@ -409,10 +425,10 @@ body {
 /* ---------- Разное ---------- */
 
 .section-label {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 10.5px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.1em;
   color: var(--tg-hint);
   margin: 4px 2px 0;
 }
@@ -423,12 +439,13 @@ body {
   right: 12px;
   z-index: 9;
   background: var(--tg-card);
-  color: var(--tg-button);
+  color: var(--tg-text);
   border: 1px solid var(--card-border);
   border-radius: 999px;
   padding: 8px 14px;
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 600;
+  letter-spacing: 0.03em;
   box-shadow: var(--card-shadow);
   cursor: pointer;
 }
@@ -442,11 +459,11 @@ body {
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  background: var(--tg-button);
-  color: var(--tg-button-text);
-  border: none;
-  font-size: 26px;
-  box-shadow: 0 14px 26px -8px rgba(201, 123, 93, 0.55);
+  background: var(--tg-secondary-bg);
+  color: var(--tg-text);
+  border: 1px solid var(--card-border);
+  font-size: 22px;
+  box-shadow: 0 6px 16px -6px rgba(43, 41, 38, 0.18);
   cursor: pointer;
   z-index: 8;
 }
