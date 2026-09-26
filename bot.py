@@ -29,6 +29,8 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
     WebAppInfo,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -90,7 +92,21 @@ def open_app_kb() -> InlineKeyboardMarkup | None:
         return None
     url = f"{MINI_APP_URL}/miniapp/index.html?_t={int(now_msk().timestamp())}"
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🚀 Открыть приложение", web_app=WebAppInfo(url=url))]]
+        inline_keyboard=[[InlineKeyboardButton(text="🚀 Открыть Запишись", web_app=WebAppInfo(url=url))]]
+    )
+
+
+def persistent_kb() -> ReplyKeyboardMarkup | None:
+    """Кнопка входа, закреплённая у поля ввода (обычная reply-клавиатура, а не инлайн под
+    сообщением) — не уезжает вверх, когда приходят новые сообщения/уведомления, и остаётся
+    доступной в любой момент, а не только сразу под тем сообщением, где её показали."""
+    if not MINI_APP_URL:
+        return None
+    url = f"{MINI_APP_URL}/miniapp/index.html"
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🚀 Открыть Запишись", web_app=WebAppInfo(url=url))]],
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
@@ -103,22 +119,22 @@ async def cmd_start(message: Message, command: CommandObject):
         # Переход по персональной ссылке специалиста — привязываем клиента.
         db.link_client(message.from_user.id, int(payload), message.from_user.full_name, message.from_user.username)
 
-    kb = open_app_kb()
+    kb = persistent_kb()
     if not kb:
         await message.answer("⚠️ Приложение временно недоступно, попробуй чуть позже.")
         return
 
     trainer = db.get_trainer(message.from_user.id)
     if trainer:
-        text = f"С возвращением, <b>{esc(trainer['name'])}</b>! 👋\nОткрывай приложение — там всё управление."
+        text = f"С возвращением, <b>{esc(trainer['name'])}</b>! 👋\nОткрывай «Запишись» — там всё управление."
     else:
-        text = "👋 <b>Привет!</b>\nЖми на кнопку, чтобы открыть приложение."
+        text = "👋 <b>Привет! Это «Запишись».</b>\nКнопка внизу всегда под рукой — жми, чтобы открыть."
     await message.answer(text, reply_markup=kb)
 
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
-    kb = open_app_kb()
+    kb = persistent_kb() or open_app_kb()
     await message.answer(
         "Всё управление и запись — внутри приложения: жми кнопку ниже.\n\n"
         f"🛟 Вопросы по боту — пиши {SUPPORT_CONTACT}",

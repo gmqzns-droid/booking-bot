@@ -168,7 +168,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             return None
         url = f"{mini_app_url.rstrip('/')}/miniapp/index.html?_t={int(time.time())}"
         return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🚀 Открыть приложение", web_app=WebAppInfo(url=url))]]
+            inline_keyboard=[[InlineKeyboardButton(text="🚀 Открыть Запишись", web_app=WebAppInfo(url=url))]]
         )
 
     async def notify_waitlist(trainer_id: int, staff_id: int):
