@@ -452,6 +452,49 @@ body {
 
 .back-pill[hidden] { display: none; }
 
+.sub-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 14px 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  background: var(--tg-secondary-bg);
+  color: var(--tg-text);
+  border: 1px solid var(--card-border);
+}
+
+.sub-banner[hidden] { display: none; }
+
+.sub-banner.warn {
+  background: rgba(180, 140, 40, 0.12);
+  border-color: rgba(180, 140, 40, 0.35);
+}
+
+.sub-banner.danger {
+  background: var(--tg-destructive-bg);
+  color: var(--tg-destructive);
+  border-color: var(--tg-destructive);
+}
+
+.sub-banner-btn {
+  flex-shrink: 0;
+  background: var(--tg-button);
+  color: var(--tg-button-text);
+  border: none;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sub-banner-btn[hidden] { display: none; }
+
 .fab-add {
   position: fixed;
   right: 16px;

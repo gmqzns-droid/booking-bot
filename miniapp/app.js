@@ -268,8 +268,9 @@
     const name = el("ob-name").value.trim();
     const category = el("ob-category").value.trim();
     if (!name) { showToast("Укажи имя"); return; }
+    let reg;
     try {
-      await api("/api/provider/register", {
+      reg = await api("/api/provider/register", {
         method: "POST",
         body: JSON.stringify({ name, category, is_business: OB_MODE === "business" }),
       });
@@ -281,7 +282,58 @@
     PROVIDER = who.provider;
     el("screen-onboarding").hidden = true;
     startApp("provider");
+    if (reg && reg.trial_days) {
+      showToast(`🎉 Пробный период на ${reg.trial_days} дней начался!`);
+    }
   };
+
+  const SUB_PLAN_LABELS = { trial: "Пробный период", solo: "Соло", business: "Бизнес" };
+
+  function daysWord(n) {
+    const n10 = n % 10, n100 = n % 100;
+    if (n100 >= 11 && n100 <= 14) return "дней";
+    if (n10 === 1) return "день";
+    if (n10 >= 2 && n10 <= 4) return "дня";
+    return "дней";
+  }
+
+  function renderSubBanner() {
+    const banner = el("sub-banner");
+    const text = el("sub-banner-text");
+    const btn = el("sub-banner-btn");
+    const sub = PROVIDER && PROVIDER.subscription;
+    if (!sub || sub.status === "none") {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+    banner.classList.remove("warn", "danger");
+    const planLabel = SUB_PLAN_LABELS[sub.plan] || sub.plan;
+    if (sub.status === "active") {
+      banner.classList.add("warn");
+      text.textContent = `${planLabel}: осталось ${sub.days_left} ${daysWord(sub.days_left)}`;
+      btn.hidden = true;
+    } else if (sub.status === "grace") {
+      banner.classList.add("danger");
+      text.textContent = `${planLabel} закончился — оплатите в течение ${sub.days_left} ${daysWord(sub.days_left)}, иначе новые записи остановятся`;
+      btn.hidden = false;
+    } else if (sub.status === "blocked") {
+      banner.classList.add("danger");
+      text.textContent = `${planLabel} закончился — новые записи приостановлены`;
+      btn.hidden = false;
+    }
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const res = await api("/api/provider/subscription/pay_request", { method: "POST", body: "{}" });
+        showToast(res.already_requested ? "Заявка уже отправлена, скоро с тобой свяжутся" : "Заявка отправлена — с тобой свяжутся для оплаты");
+      } catch (e) {
+        showToast("Не получилось отправить заявку, попробуй позже");
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  }
 
   async function viewAsClient(trainerId) {
     try {
@@ -310,6 +362,7 @@
     ROLE = role;
     el("screen-app").hidden = false;
     updateBackToProviderPill();
+    if (role === "provider") renderSubBanner(); else el("sub-banner").hidden = true;
     const tabs = role === "provider"
       ? [
           { id: "schedule", icon: "schedule", label: "Расписание" },

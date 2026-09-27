@@ -255,6 +255,7 @@ def init_db():
         # Ограничения начинают действовать только для тех, кому явно назначили план.
         _ensure_column(conn, "trainers", "sub_plan", "TEXT")
         _ensure_column(conn, "trainers", "sub_until", "TEXT")
+        _ensure_column(conn, "trainers", "sub_payment_requested_at", "TEXT")
 
         # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
         # специалист одновременно, вторая привязка тихо затирала первую). Переносим
@@ -344,7 +345,41 @@ def set_trainer_is_business(trainer_id: int, is_business: bool):
 # ---------- Подписка специалиста на бота (тренер -> Георгий) ----------
 
 SUB_GRACE_DAYS = 3  # после истечения даём эти дни продолжать работать как обычно
-SUB_PLANS = {"solo": "Соло", "business": "Бизнес"}
+SUB_TRIAL_DAYS = 14
+SUB_PLANS = {"trial": "Пробный период", "solo": "Соло", "business": "Бизнес"}
+PAYMENT_REQUEST_COOLDOWN_HOURS = 6  # не спамим Георгию при повторных тапах "Оплатить"
+
+
+def start_trial(trainer_id: int, days: int = SUB_TRIAL_DAYS):
+    """Вызывается один раз при регистрации специалиста. Если на биллинге уже что-то стоит
+    (не должно быть для новой регистрации, но на всякий случай) — ничего не трогает."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT sub_plan FROM trainers WHERE id=?", (trainer_id,)).fetchone()
+        if row and row["sub_plan"]:
+            return
+        until = (now_msk() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+        conn.execute("UPDATE trainers SET sub_plan='trial', sub_until=? WHERE id=?", (until, trainer_id))
+
+
+def can_request_payment(trainer_id: int) -> bool:
+    """Не даём заваливать Георгия уведомлениями — одно нажатие 'Оплатить' раз в
+    PAYMENT_REQUEST_COOLDOWN_HOURS часов."""
+    trainer = get_trainer(trainer_id)
+    if not trainer or "sub_payment_requested_at" not in trainer.keys() or not trainer["sub_payment_requested_at"]:
+        return True
+    try:
+        last = datetime.strptime(trainer["sub_payment_requested_at"], "%Y-%m-%d %H:%M").replace(tzinfo=MSK)
+    except ValueError:
+        return True
+    return now_msk() - last >= timedelta(hours=PAYMENT_REQUEST_COOLDOWN_HOURS)
+
+
+def mark_payment_requested(trainer_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE trainers SET sub_payment_requested_at=? WHERE id=?",
+            (now_msk().strftime("%Y-%m-%d %H:%M"), trainer_id),
+        )
 
 
 def set_subscription(trainer_id: int, plan: str, months: int = 1):
@@ -377,19 +412,28 @@ def clear_subscription(trainer_id: int):
 
 def get_subscription_status(trainer_id: int) -> dict:
     """status: 'none' (не на биллинге — без ограничений), 'active', 'grace' (просрочено,
-    но ещё в льготном периоде), 'blocked' (просрочено, льготный период истёк)."""
+    но ещё в льготном периоде), 'blocked' (просрочено, льготный период истёк).
+    days_left — сколько ещё дней активно/до конца льготного периода (может быть 0),
+    только для 'active' и 'grace'; для остальных статусов — None."""
     trainer = get_trainer(trainer_id)
     if not trainer or not trainer["sub_plan"] or not trainer["sub_until"]:
-        return {"status": "none", "plan": None, "until": None}
+        return {"status": "none", "plan": None, "until": None, "days_left": None}
     until = datetime.strptime(trainer["sub_until"], "%Y-%m-%d %H:%M").replace(tzinfo=MSK)
     now = now_msk()
+    days_left = None
     if now <= until:
         status = "active"
+        days_left = max(0, -(-int((until - now).total_seconds()) // 86400))  # ceil
     elif now <= until + timedelta(days=SUB_GRACE_DAYS):
         status = "grace"
+        grace_end = until + timedelta(days=SUB_GRACE_DAYS)
+        days_left = max(0, -(-int((grace_end - now).total_seconds()) // 86400))
     else:
         status = "blocked"
-    return {"status": status, "plan": trainer["sub_plan"], "until": trainer["sub_until"]}
+    return {
+        "status": status, "plan": trainer["sub_plan"], "until": trainer["sub_until"],
+        "days_left": days_left,
+    }
 
 
 def list_subscriptions() -> list[dict]:

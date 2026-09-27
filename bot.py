@@ -224,12 +224,15 @@ async def cmd_backup_now(message: Message):
     await send_db_backup()
 
 
-SUB_PLAN_LABELS = {"solo": "Соло", "business": "Бизнес"}
+# Только эти два тарифа можно назначить вручную через /pay — "trial" специалист получает
+# сам, автоматически, при регистрации (db.start_trial), админ его руками не выставляет.
+PAYABLE_PLANS = {"solo": "Соло", "business": "Бизнес"}
 
 
 @dp.message(Command("subs"))
 async def cmd_subs(message: Message):
-    """Только для тебя — список специалистов, которых завели на биллинг, и статус их подписки."""
+    """Только для тебя — список специалистов, которых завели на биллинг (включая тех, кто
+    сейчас просто на пробном периоде), и статус их подписки."""
     if message.from_user.id != ADMIN_ID:
         return
     rows = db.list_subscriptions()
@@ -243,7 +246,7 @@ async def cmd_subs(message: Message):
     icons = {"active": "✅", "grace": "⏳", "blocked": "🚫"}
     lines = ["<b>Подписки специалистов</b>"]
     for r in rows:
-        plan_label = SUB_PLAN_LABELS.get(r["plan"], r["plan"])
+        plan_label = db.SUB_PLANS.get(r["plan"], r["plan"])
         lines.append(
             f"{icons.get(r['status'], '')} {esc(r['name'])} (id {r['id']}) — {plan_label}, до {r['until']}"
         )
@@ -257,7 +260,7 @@ async def cmd_pay(message: Message, command: CommandObject):
     if message.from_user.id != ADMIN_ID:
         return
     parts = (command.args or "").split()
-    if len(parts) < 2 or parts[1] not in SUB_PLAN_LABELS:
+    if len(parts) < 2 or parts[1] not in PAYABLE_PLANS:
         await message.answer(
             "Формат: <code>/pay &lt;id специалиста&gt; &lt;solo|business&gt; [месяцев]</code>\n"
             "Например: <code>/pay 123456789 solo</code> — продлить на 1 месяц, "
@@ -282,12 +285,12 @@ async def cmd_pay(message: Message, command: CommandObject):
     plan = parts[1]
     new_until = db.set_subscription(trainer_id, plan, months)
     await message.answer(
-        f"✅ {esc(trainer['name'])} — тариф «{SUB_PLAN_LABELS[plan]}», оплачено до {new_until}."
+        f"✅ {esc(trainer['name'])} — тариф «{PAYABLE_PLANS[plan]}», оплачено до {new_until}."
     )
     try:
         await bot.send_message(
             trainer_id,
-            f"✅ Оплата подписки на бота получена — тариф «{SUB_PLAN_LABELS[plan]}», действует до {new_until}.",
+            f"✅ Оплата подписки на бота получена — тариф «{PAYABLE_PLANS[plan]}», действует до {new_until}.",
         )
     except Exception:
         logger.warning("Не удалось уведомить специалиста %s об оплате", trainer_id)
@@ -573,7 +576,7 @@ async def main():
 
     # Веб-сервер мини-приложения (API + статика) — крутится в этом же процессе,
     # рядом с long polling бота, на порту, который выдаёт Railway.
-    app = webapp.create_app(bot, BOT_TOKEN, bot_username, MINI_APP_URL)
+    app = webapp.create_app(bot, BOT_TOKEN, bot_username, MINI_APP_URL, admin_id=ADMIN_ID)
     runner = aioweb.AppRunner(app)
     await runner.setup()
     site = aioweb.TCPSite(runner, "0.0.0.0", PORT)

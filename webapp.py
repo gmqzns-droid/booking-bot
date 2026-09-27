@@ -194,7 +194,7 @@ async def error_middleware(request: web.Request, handler):
         return web.json_response({"error": "internal error"}, status=500)
 
 
-def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -> web.Application:
+def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", admin_id: int | None = None) -> web.Application:
     app = web.Application(middlewares=[error_middleware])
 
     def open_app_kb() -> InlineKeyboardMarkup | None:
@@ -257,6 +257,37 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             status=402,
         )
 
+    @require_auth
+    async def handle_subscription_pay_request(request: web.Request, user: dict) -> web.Response:
+        """Специалист жмёт «Оплатить» в баннере триала/подписки. Пока в боте нет прямой
+        интеграции с ЮKassa (нужен подключённый магазин с shop_id/секретным ключом) —
+        это просто аккуратно передаёт админу, что человек готов платить, чтобы тот отправил
+        ссылку на оплату вручную и потом отметил /pay."""
+        trainer = db.get_trainer(user["id"])
+        if not trainer:
+            return web.json_response({"error": "not a provider"}, status=403)
+        if not admin_id:
+            return web.json_response({"error": "unavailable"}, status=503)
+        if not db.can_request_payment(user["id"]):
+            return web.json_response({"ok": True, "already_requested": True})
+        db.mark_payment_requested(user["id"])
+        sub = db.get_subscription_status(user["id"])
+        plan_label = db.SUB_PLANS.get(sub["plan"], sub["plan"] or "—")
+        username_line = f" (@{esc(user['username'])})" if user.get("username") else ""
+        try:
+            await bot.send_message(
+                admin_id,
+                f"💳 <b>Запрос на оплату подписки</b>\n"
+                f"{esc(trainer['name'])}{username_line}, id {trainer['id']}\n"
+                f"Тариф: {plan_label}, статус: {sub['status']}\n"
+                f"Отправь ему ссылку на оплату в ЮKassa, а после оплаты отметь: "
+                f"<code>/pay {trainer['id']} solo</code> (или business).",
+            )
+        except Exception:
+            logger.warning("Не удалось отправить админу запрос на оплату от %s", user["id"])
+            return web.json_response({"error": "internal error"}, status=500)
+        return web.json_response({"ok": True})
+
     # ---------- whoami / профиль ----------
 
     @require_auth
@@ -284,6 +315,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
                     "client_links": [
                         {"id": link["trainer_id"], "name": link["trainer_name"]} for link in client_links
                     ],
+                    "subscription": db.get_subscription_status(trainer["id"]),
                 },
             })
         client_trainer_id = db.get_client_trainer(uid)
@@ -308,7 +340,8 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             # так и расписание, и запись клиента работают по единой staff_id-модели,
             # но без отдельного экрана выбора мастера в UI.
             db.add_staff(user["id"], name)
-        return web.json_response({"ok": True})
+        db.start_trial(user["id"])
+        return web.json_response({"ok": True, "trial_days": db.SUB_TRIAL_DAYS})
 
     @require_auth
     async def handle_provider_profile_update(request: web.Request, user: dict) -> web.Response:
@@ -1510,6 +1543,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/whoami", handle_whoami)
     app.router.add_post("/api/provider/register", handle_provider_register)
     app.router.add_post("/api/provider/profile", handle_provider_profile_update)
+    app.router.add_post("/api/provider/subscription/pay_request", handle_subscription_pay_request)
     app.router.add_get("/api/provider/services", handle_services_list)
     app.router.add_post("/api/provider/services/add", handle_services_add)
     app.router.add_post("/api/provider/services/update", handle_services_update)
