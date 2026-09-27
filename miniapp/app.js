@@ -637,9 +637,12 @@
       clientsData = results[0];
       servicesData = results[1];
     } catch (e) {
+      if (el("sheet-overlay").hidden) return; // пользователь уже закрыл лист — не показываем ошибку поверх того, что он открыл вместо него
       openSheet(`<div class="sheet-title">Записать участника</div><p class="muted">Не удалось загрузить данные</p>`);
       return;
     }
+
+    if (el("sheet-overlay").hidden) return; // закрыли лист, пока грузились клиенты/услуги — не открываем его заново без спроса
 
     const clients = (clientsData.clients || []).filter((c) => !c.blocked);
     const services = servicesData.services || [];
@@ -1612,11 +1615,15 @@
     try {
       data = await api(`/api/provider/stats?period=${STATS_PERIOD}`, { method: "GET" });
     } catch (e) {
-      el("stats-body").innerHTML = '<p class="muted">Не удалось загрузить</p>';
+      // Пока запрос летал, могли уйти на другую вкладку — #stats-body тогда уже не в DOM.
+      const body = el("stats-body");
+      if (body) body.innerHTML = '<p class="muted">Не удалось загрузить</p>';
       return;
     }
-    el("stats-body").className = "";
-    el("stats-body").innerHTML = `
+    const body = el("stats-body");
+    if (!body) return;
+    body.className = "";
+    body.innerHTML = `
       <div class="card-row"><span class="muted">Визитов</span><b>${data.visits}</b></div>
       <div class="card-row"><span class="muted">Выручка</span><b>${data.revenue ? data.revenue + "₽" : "—"}</b></div>
       <div class="card-row"><span class="muted">Средний чек</span><b>${data.avg_check ? data.avg_check + "₽" : "—"}</b></div>
@@ -2119,6 +2126,12 @@
     const whoLine = (b) => (b.staff_name && b.staff_name !== b.trainer_name)
       ? `${escapeHtml(b.staff_name)} (${escapeHtml(b.trainer_name)})`
       : escapeHtml(b.trainer_name);
+    // Отдельная неэкранированная версия для .ics — календарный файл не HTML, и если
+    // пропустить его текст через whoLine(), спецсимволы в имени (например «&») попадут
+    // в файл как буквальные HTML-сущности («&amp;») вместо исходного символа.
+    const whoLineRaw = (b) => (b.staff_name && b.staff_name !== b.trainer_name)
+      ? `${b.staff_name} (${b.trainer_name})`
+      : b.trainer_name;
 
     let html = "";
 
@@ -2184,7 +2197,7 @@
       btn.onclick = () => {
         const b = data.bookings.find((x) => String(x.id) === btn.dataset.ics);
         if (!b) return;
-        const title = whoLine(b).replace(/<[^>]+>/g, "") + (b.service_name ? ` — ${b.service_name}` : "");
+        const title = whoLineRaw(b) + (b.service_name ? ` — ${b.service_name}` : "");
         const ics = buildIcs({
           title,
           description: b.trainer_phone ? `Телефон: ${b.trainer_phone}` : "",

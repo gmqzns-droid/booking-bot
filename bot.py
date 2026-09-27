@@ -165,6 +165,15 @@ async def cmd_start(message: Message, command: CommandObject):
     if payload.startswith("reg_"):
         if await handle_regular_invite(message, payload[4:]):
             return
+        # Ссылка выглядела как приглашение на абонемент, но токен не нашёлся или абонемент
+        # уже остановлен — раньше это молча проваливалось в обычное приветствие, и человек
+        # не понимал, сработала ли его ссылка вообще.
+        await message.answer(
+            "⚠️ Эта ссылка-приглашение больше не действует — возможно, специалист уже "
+            "остановил постоянную запись, или ссылка была введена неверно. "
+            "Уточни у специалиста новую ссылку."
+        )
+        return
     elif payload.isdigit() and db.get_trainer(int(payload)):
         # Переход по персональной ссылке специалиста — привязываем клиента.
         db.link_client(message.from_user.id, int(payload), message.from_user.full_name, message.from_user.username)
@@ -275,56 +284,68 @@ async def handle_plain_text(message: Message):
 async def send_reminders():
     now = now_msk()
 
+    # Каждая итерация обёрнута целиком (не только отправка сообщения) — одна проблемная
+    # строка (например, временная блокировка БД параллельной записью) не должна обрывать
+    # весь батч и оставлять остальных клиентов без напоминания на этом прогоне.
     win24_start = (now + timedelta(hours=23)).strftime("%Y-%m-%d %H:%M")
     win24_end = (now + timedelta(hours=25)).strftime("%Y-%m-%d %H:%M")
     for slot in db.slots_needing_reminder("reminder_24h_sent", win24_start, win24_end):
         try:
-            await bot.send_message(
-                slot["client_id"],
-                f"⏰ Напоминаю: завтра в <b>{slot['slot_dt'][-5:]}</b> у тебя запись"
-                f"{' (' + esc(slot['service_name']) + ')' if slot['service_name'] else ''}.",
-            )
+            try:
+                await bot.send_message(
+                    slot["client_id"],
+                    f"⏰ Напоминаю: завтра в <b>{slot['slot_dt'][-5:]}</b> у тебя запись"
+                    f"{' (' + esc(slot['service_name']) + ')' if slot['service_name'] else ''}.",
+                )
+            except Exception:
+                logger.warning("Не удалось отправить напоминание клиенту %s", slot["client_id"])
+            db.mark_reminder_sent(slot["id"], "reminder_24h_sent")
         except Exception:
-            logger.warning("Не удалось отправить напоминание клиенту %s", slot["client_id"])
-        db.mark_reminder_sent(slot["id"], "reminder_24h_sent")
+            logger.exception("Сбой обработки 24ч-напоминания для слота %s", slot["id"])
 
     win1_start = (now + timedelta(minutes=50)).strftime("%Y-%m-%d %H:%M")
     win1_end = (now + timedelta(minutes=70)).strftime("%Y-%m-%d %H:%M")
     for slot in db.slots_needing_reminder("reminder_1h_sent", win1_start, win1_end):
         try:
-            await bot.send_message(
-                slot["client_id"],
-                f"⏰ Через час у тебя запись (<b>{slot['slot_dt'][-5:]}</b>). Не забудь!",
-            )
+            try:
+                await bot.send_message(
+                    slot["client_id"],
+                    f"⏰ Через час у тебя запись (<b>{slot['slot_dt'][-5:]}</b>). Не забудь!",
+                )
+            except Exception:
+                logger.warning("Не удалось отправить напоминание клиенту %s", slot["client_id"])
+            db.mark_reminder_sent(slot["id"], "reminder_1h_sent")
         except Exception:
-            logger.warning("Не удалось отправить напоминание клиенту %s", slot["client_id"])
-        db.mark_reminder_sent(slot["id"], "reminder_1h_sent")
+            logger.exception("Сбой обработки 1ч-напоминания для слота %s", slot["id"])
 
 
 async def send_review_requests():
     """Раз в 20 минут спрашивает оценку у тех, чей визит прошёл 2+ часа назад (и не старше
     26 часов — чтобы не заваливать клиентов старыми просьбами после простоя/редеплоя)."""
     for slot in db.slots_needing_review():
-        trainer = db.get_trainer(slot["trainer_id"])
-        if not trainer:
-            db.mark_review_requested(slot["id"])
-            continue
-        staff_name = (
-            slot["staff_name"] if "staff_name" in slot.keys() and slot["staff_name"] else trainer["name"]
-        )
-        who_line = f" у <b>{esc(staff_name)}</b>" if trainer["is_business"] else ""
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=f"{i}⭐", callback_data=f"rv:{slot['id']}:{i}") for i in range(1, 6)
-        ]])
         try:
-            await bot.send_message(
-                slot["client_id"],
-                f"Как прошёл визит{who_line}? Оцени от 1 до 5 — это очень помогает специалисту.",
-                reply_markup=kb,
+            trainer = db.get_trainer(slot["trainer_id"])
+            if not trainer:
+                db.mark_review_requested(slot["id"])
+                continue
+            staff_name = (
+                slot["staff_name"] if "staff_name" in slot.keys() and slot["staff_name"] else trainer["name"]
             )
+            who_line = f" у <b>{esc(staff_name)}</b>" if trainer["is_business"] else ""
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=f"{i}⭐", callback_data=f"rv:{slot['id']}:{i}") for i in range(1, 6)
+            ]])
+            try:
+                await bot.send_message(
+                    slot["client_id"],
+                    f"Как прошёл визит{who_line}? Оцени от 1 до 5 — это очень помогает специалисту.",
+                    reply_markup=kb,
+                )
+            except Exception:
+                logger.warning("Не удалось отправить запрос на отзыв клиенту %s", slot["client_id"])
+            db.mark_review_requested(slot["id"])
         except Exception:
-            logger.warning("Не удалось отправить запрос на отзыв клиенту %s", slot["client_id"])
-        db.mark_review_requested(slot["id"])
+            logger.exception("Сбой обработки запроса отзыва для слота %s", slot["id"])
 
 
 async def send_db_backup():

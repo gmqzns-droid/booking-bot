@@ -175,8 +175,27 @@ def trainer_public_dict(trainer) -> dict:
     }
 
 
+@web.middleware
+async def error_middleware(request: web.Request, handler):
+    """Ловит то, что не поймали сами хендлеры, и превращает в аккуратный JSON-ответ вместо
+    голого 500 со стектрейсом. Раньше почти каждый POST-хендлер делал `await request.json()`
+    без try/except — битый/пустой/оборванный запрос (например, от клиента, прервавшего
+    соединение) валил его необработанным ValueError. Заодно подстраховывает и от любой другой
+    непойманной ошибки внутри хендлера — так presenter не увидит 500 без объяснения причины
+    посреди демонстрации."""
+    try:
+        return await handler(request)
+    except web.HTTPException:
+        raise
+    except json.JSONDecodeError:
+        return web.json_response({"error": "bad json"}, status=400)
+    except Exception:
+        logger.exception("Необработанная ошибка в обработчике %s %s", request.method, request.path)
+        return web.json_response({"error": "internal error"}, status=500)
+
+
 def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[error_middleware])
 
     def open_app_kb() -> InlineKeyboardMarkup | None:
         """Та же кнопка входа, что и в bot.py — используется в уведомлениях из листа
@@ -337,7 +356,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
-        service = db.get_service(int(body.get("id", 0)))
+        try:
+            service = db.get_service(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not service or service["trainer_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         kwargs = {}
@@ -355,7 +377,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
-        service = db.get_service(int(body.get("id", 0)))
+        try:
+            service = db.get_service(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not service or service["trainer_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         db.delete_service(service["id"])
@@ -390,7 +415,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not trainer or not trainer["is_business"]:
             return web.json_response({"error": "not a business"}, status=403)
         body = await request.json()
-        branch = db.get_branch(int(body.get("id", 0)))
+        try:
+            branch = db.get_branch(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not branch or branch["business_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         name = (body.get("name") or "").strip()[:80]
@@ -407,7 +435,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not trainer or not trainer["is_business"]:
             return web.json_response({"error": "not a business"}, status=403)
         body = await request.json()
-        branch = db.get_branch(int(body.get("id", 0)))
+        try:
+            branch = db.get_branch(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not branch or branch["business_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         db.delete_branch(branch["id"])
@@ -457,7 +488,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not trainer or not trainer["is_business"]:
             return web.json_response({"error": "not a business"}, status=403)
         body = await request.json()
-        staff = db.get_staff(int(body.get("id", 0)))
+        try:
+            staff = db.get_staff(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not staff or staff["business_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         name = (body.get("name") or "").strip()[:80]
@@ -478,7 +512,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not trainer or not trainer["is_business"]:
             return web.json_response({"error": "not a business"}, status=403)
         body = await request.json()
-        staff = db.get_staff(int(body.get("id", 0)))
+        try:
+            staff = db.get_staff(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not staff or staff["business_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         if db.count_staff(user["id"]) <= 1:
@@ -528,8 +565,15 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             return web.json_response({"error": "bad time"}, status=400)
         if not (0 <= weekday <= 6 and 0 <= hh <= 23 and 0 <= mm <= 59):
             return web.json_response({"error": "bad time"}, status=400)
-        service_id = body.get("service_id")
-        service = db.get_service(int(service_id)) if service_id else None
+        service = None
+        raw_service_id = body.get("service_id")
+        if raw_service_id:
+            try:
+                service = db.get_service(int(raw_service_id))
+            except (TypeError, ValueError):
+                service = None
+            if not service or service["trainer_id"] != user["id"]:
+                return web.json_response({"error": "bad service_id"}, status=400)
         client_name = (body.get("client_name") or "").strip()[:80] or None
 
         regular_id, _token = db.add_regular(
@@ -547,7 +591,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
-        regular = db.get_regular(int(body.get("id", 0)))
+        try:
+            regular = db.get_regular(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not regular or regular["trainer_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         cancelled = db.cancel_regular_series(regular["id"])
@@ -698,7 +745,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
-        slot = db.get_slot(int(body.get("slot_id", 0)))
+        try:
+            slot = db.get_slot(int(body.get("slot_id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad slot_id"}, status=400)
         if not slot or slot["trainer_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         was_booked = slot["status"] == "booked"
@@ -754,12 +804,14 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             link = db.get_client_link(user["id"], client_id)
             if not link:
                 return web.json_response({"error": "not linked"}, status=400)
-            client_name = (link["custom_name"] if "custom_name" in link.keys() else None) or link["name"]
+            client_name = link["name"]
             client_username = link["username"]
+            client_custom_name = link["custom_name"] if "custom_name" in link.keys() else None
         else:
             client_name = (body.get("name") or "").strip()[:100]
             if not client_name:
                 return web.json_response({"error": "name required"}, status=400)
+            client_custom_name = None
 
         if service and service["duration_min"]:
             conflict = db.find_overlapping_booked_slot(
@@ -774,6 +826,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             slot["id"], client_id, client_name, client_username,
             service["id"] if service else None,
             service["name"] if service else None,
+            client_custom_name=client_custom_name,
             booked_via="manual",
         )
         if not ok:
@@ -908,7 +961,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
-        slot = db.get_slot(int(body.get("slot_id", 0)))
+        try:
+            slot = db.get_slot(int(body.get("slot_id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad slot_id"}, status=400)
         if not slot or slot["trainer_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         db.mark_no_show(slot["id"])
@@ -1082,7 +1138,10 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
         body = await request.json()
-        promo = db.get_promo(int(body.get("id", 0)))
+        try:
+            promo = db.get_promo(int(body.get("id", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "bad id"}, status=400)
         if not promo or promo["trainer_id"] != user["id"]:
             return web.json_response({"error": "not found"}, status=404)
         db.delete_promo(promo["id"])
@@ -1164,8 +1223,15 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         staff = db.get_staff(staff_id)
         if not staff or staff["business_id"] != trainer_id:
             return web.json_response({"error": "not found"}, status=404)
-        service_id = body.get("service_id")
-        service = db.get_service(int(service_id)) if service_id else None
+        service = None
+        raw_service_id = body.get("service_id")
+        if raw_service_id:
+            try:
+                service = db.get_service(int(raw_service_id))
+            except (TypeError, ValueError):
+                service = None
+            if not service or service["trainer_id"] != trainer_id:
+                return web.json_response({"error": "bad service_id"}, status=400)
         full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Без имени"
         db.join_waitlist(
             trainer_id, staff["id"], staff["name"], user["id"], full_name, user.get("username"),
@@ -1194,14 +1260,21 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             slot_id = int(body.get("slot_id"))
         except (TypeError, ValueError):
             return web.json_response({"error": "bad slot_id"}, status=400)
-        service_id = body.get("service_id")
-        service = db.get_service(int(service_id)) if service_id else None
-
         slot_pre = db.get_slot(slot_id)
         if not slot_pre:
             return web.json_response({"error": "not found"}, status=404)
         if db.is_client_blocked(slot_pre["trainer_id"], user["id"]):
             return web.json_response({"error": "blocked"}, status=403)
+
+        service = None
+        raw_service_id = body.get("service_id")
+        if raw_service_id:
+            try:
+                service = db.get_service(int(raw_service_id))
+            except (TypeError, ValueError):
+                service = None
+            if not service or service["trainer_id"] != slot_pre["trainer_id"]:
+                return web.json_response({"error": "bad service_id"}, status=400)
 
         promo = None
         promo_code_input = (body.get("promo_code") or "").strip()

@@ -972,8 +972,14 @@ def generate_regular_occurrences(regular, weeks_ahead: int = 8) -> int:
     (уже существующие даты просто пропускаются благодаря уникальному индексу слотов).
     Вызывается сразу при создании абонемента/привязке ученика, а затем ежедневно из
     планировщика — чтобы окно вперёд не сжималось со временем."""
-    today = now_msk().date()
+    now = now_msk()
+    today = now.date()
     delta = (regular["weekday"] - today.weekday()) % 7
+    if delta == 0 and (now.hour, now.minute) >= (regular["hh"], regular["mm"]):
+        # Сегодня тот самый день недели, но время уже прошло — ближайшее вхождение только
+        # через неделю, иначе создали бы занятие в прошлом (актуально при создании абонемента
+        # вечером в его собственный день).
+        delta = 7
     base = today + timedelta(days=delta)
     added = 0
     for week in range(weeks_ahead):
@@ -1254,11 +1260,19 @@ def book_slot(
 ) -> bool:
     """booked_via: 'client' — клиент записался сам, 'manual' — специалист вписал вручную.
     None (например, у старых вызовов) равнозначен 'client' для аналитики источников записей —
-    так исторически и было, пока не появилась ручная запись специалистом."""
+    так исторически и было, пока не появилась ручная запись специалистом.
+
+    Явно сбрасывает promo_code/discount_label/no_show/review_requested: слот мог уже
+    побывать занятым раньше (клиент отменил через free_up_slot, и его освободили для новой
+    записи) — без сброса новая бронь молча унаследовала бы промокод и статус неявки от
+    совсем другого человека. Промокод для ЭТОЙ брони, если он есть, ставится отдельным
+    вызовом set_slot_promo сразу после book_slot."""
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=?, "
-            "service_id=?, service_name=?, client_custom_name=?, booked_via=? WHERE id=? AND status='free'",
+            "service_id=?, service_name=?, client_custom_name=?, booked_via=?, "
+            "promo_code=NULL, discount_label=NULL, no_show=0, review_requested=0 "
+            "WHERE id=? AND status='free'",
             (client_id, client_name, client_username, service_id, service_name, client_custom_name,
              booked_via, slot_id),
         )
@@ -1382,10 +1396,15 @@ def cancel_slot(slot_id: int) -> bool:
 
 
 def free_up_slot(slot_id: int) -> bool:
+    """Освобождает слот при отмене клиентом (в отличие от cancel_slot — не «отменённый»
+    навсегда, а снова доступен для записи кем угодно). Сбрасывает и promo_code/
+    discount_label/no_show/review_requested — иначе следующий, кто займёт этот же слот,
+    молча унаследовал бы промокод или отметку о неявке от предыдущей, отменённой брони."""
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE slots SET status='free', client_id=NULL, client_name=NULL, client_username=NULL, "
             "service_id=NULL, service_name=NULL, client_custom_name=NULL, "
+            "promo_code=NULL, discount_label=NULL, no_show=0, review_requested=0, "
             "reminder_24h_sent=0, reminder_1h_sent=0 WHERE id=?",
             (slot_id,),
         )
@@ -1446,7 +1465,7 @@ def list_client_past_bookings(client_id: int, limit: int = 10):
             "LEFT JOIN staff ON staff.id = slots.staff_id "
             "LEFT JOIN branches ON branches.id = staff.branch_id "
             "LEFT JOIN services ON services.id = slots.service_id "
-            "WHERE client_id=? AND status='booked' AND slot_dt < ? "
+            "WHERE client_id=? AND ((status='booked' AND slot_dt < ?) OR status='cancelled') "
             "ORDER BY slot_dt DESC LIMIT ?",
             (client_id, now_msk().strftime("%Y-%m-%d %H:%M"), limit),
         ).fetchall()
@@ -1469,8 +1488,14 @@ def mark_reminder_sent(slot_id: int, field: str):
 
 
 def reset_all():
-    """Полностью очищает всех тренеров, клиентов и записи. Необратимо — для тестирования."""
+    """Полностью очищает базу — все таблицы без исключения. Необратимо — для тестирования.
+    Раньше чистила только trainers/clients/slots — до того, как появились client_links,
+    staff, branches, services, regulars, waitlist, reviews и promo_codes/promo_redemptions,
+    и с тех пор незамеченно оставляла их нетронутыми при «полном» сбросе."""
     with get_conn() as conn:
-        conn.execute("DELETE FROM slots")
-        conn.execute("DELETE FROM clients")
-        conn.execute("DELETE FROM trainers")
+        for table in (
+            "slots", "clients", "trainers", "services", "staff", "branches",
+            "client_links", "regulars", "waitlist", "reviews",
+            "promo_codes", "promo_redemptions",
+        ):
+            conn.execute(f"DELETE FROM {table}")
