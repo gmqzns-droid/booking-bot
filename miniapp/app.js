@@ -1468,7 +1468,43 @@
     setHeader("Профиль", "");
     hideFab();
     const content = el("content");
+    const prices = PROVIDER.sub_prices || { solo: 1490, business: 2990 };
+    const sub = PROVIDER.subscription || { status: "none" };
+    const subStatusText = {
+      none: "Подписка ещё не подключена.",
+      active: sub.plan === "trial"
+        ? `Пробный период — осталось ${sub.days_left} ${daysWord(sub.days_left)}.`
+        : `Тариф «${SUB_PLAN_LABELS[sub.plan] || sub.plan}» активен до ${sub.until}.`,
+      grace: `Тариф «${SUB_PLAN_LABELS[sub.plan] || sub.plan}» закончился — оплатите в течение ${sub.days_left} ${daysWord(sub.days_left)}, иначе новые записи остановятся.`,
+      blocked: `Тариф «${SUB_PLAN_LABELS[sub.plan] || sub.plan}» не оплачен — новые записи приостановлены.`,
+    }[sub.status] || "";
     content.innerHTML = `
+      <div class="card">
+        <div class="card-title">Подписка на бота</div>
+        <p class="muted" style="margin-bottom:12px">${subStatusText}</p>
+        <div class="sub-plans">
+          <div class="sub-plan-tile${sub.plan === "solo" ? " current" : ""}">
+            <div class="sub-plan-name">Соло</div>
+            <div class="sub-plan-price">${prices.solo} ₽<span>/мес</span></div>
+            <ul class="sub-plan-features">
+              <li>Один специалист</li>
+              <li>Неограниченно записей</li>
+              <li>Напоминания клиентам</li>
+            </ul>
+            <button class="btn btn-secondary btn-block sub-plan-btn" data-plan-btn="solo">Оплатить</button>
+          </div>
+          <div class="sub-plan-tile${sub.plan === "business" ? " current" : ""}">
+            <div class="sub-plan-name">Бизнес</div>
+            <div class="sub-plan-price">${prices.business} ₽<span>/мес</span></div>
+            <ul class="sub-plan-features">
+              <li>Несколько сотрудников</li>
+              <li>Филиалы</li>
+              <li>Аналитика и промокоды</li>
+            </ul>
+            <button class="btn btn-secondary btn-block sub-plan-btn" data-plan-btn="business">Оплатить</button>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="field">
           <label class="field-label">Имя</label>
@@ -1542,6 +1578,23 @@
         `).join("")}
       </div>` : ""}
     `;
+    Array.from(content.querySelectorAll(".sub-plan-btn")).forEach((btn) => {
+      btn.onclick = async () => {
+        const plan = btn.dataset.planBtn;
+        btn.disabled = true;
+        try {
+          const res = await api("/api/provider/subscription/pay_request", {
+            method: "POST",
+            body: JSON.stringify({ plan }),
+          });
+          showToast(res.already_requested ? "Заявка уже отправлена, скоро с тобой свяжутся" : "Заявка отправлена — с тобой свяжутся для оплаты");
+        } catch (e) {
+          showToast("Не получилось отправить заявку, попробуй позже");
+        } finally {
+          btn.disabled = false;
+        }
+      };
+    });
     el("pf-save").onclick = async () => {
       const name = el("pf-name").value.trim();
       const category = el("pf-category").value.trim();

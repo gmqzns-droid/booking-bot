@@ -495,6 +495,69 @@ body {
 
 .sub-banner-btn[hidden] { display: none; }
 
+.sub-plans {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sub-plan-tile {
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 14px 12px;
+  background: var(--tg-secondary-bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.sub-plan-tile.current {
+  border-color: var(--tg-link);
+  background: var(--tg-card);
+}
+
+.sub-plan-name {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.sub-plan-price {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--tg-text);
+  margin-bottom: 10px;
+}
+
+.sub-plan-price span {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tg-hint);
+}
+
+.sub-plan-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  flex: 1;
+}
+
+.sub-plan-features li {
+  font-size: 12px;
+  color: var(--tg-hint);
+  line-height: 1.6;
+  padding-left: 14px;
+  position: relative;
+}
+
+.sub-plan-features li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--tg-link);
+}
+
+.sub-plan-btn { margin-top: auto; }
+
 .fab-add {
   position: fixed;
   right: 16px;

@@ -272,16 +272,26 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", a
             return web.json_response({"ok": True, "already_requested": True})
         db.mark_payment_requested(user["id"])
         sub = db.get_subscription_status(user["id"])
-        plan_label = db.SUB_PLANS.get(sub["plan"], sub["plan"] or "—")
+        body = {}
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            pass
+        # Какой тариф человек выбрал на экране подписки — просто подсказка админу, ни на
+        # что не влияет сама по себе (окончательно тариф выставляется командой /pay).
+        wanted_plan = body.get("plan") if isinstance(body, dict) else None
+        wanted_plan = wanted_plan if wanted_plan in db.SUB_PRICES else None
+        plan_label = db.SUB_PLANS.get(wanted_plan or sub["plan"], sub["plan"] or "—")
+        price_line = f" ({db.SUB_PRICES[wanted_plan]}₽/мес)" if wanted_plan else ""
         username_line = f" (@{esc(user['username'])})" if user.get("username") else ""
         try:
             await bot.send_message(
                 admin_id,
                 f"💳 <b>Запрос на оплату подписки</b>\n"
                 f"{esc(trainer['name'])}{username_line}, id {trainer['id']}\n"
-                f"Тариф: {plan_label}, статус: {sub['status']}\n"
+                f"Хочет тариф: {plan_label}{price_line} (текущий статус: {sub['status']})\n"
                 f"Отправь ему ссылку на оплату в ЮKassa, а после оплаты отметь: "
-                f"<code>/pay {trainer['id']} solo</code> (или business).",
+                f"<code>/pay {trainer['id']} {wanted_plan or 'solo'}</code>.",
             )
         except Exception:
             logger.warning("Не удалось отправить админу запрос на оплату от %s", user["id"])
@@ -316,6 +326,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", a
                         {"id": link["trainer_id"], "name": link["trainer_name"]} for link in client_links
                     ],
                     "subscription": db.get_subscription_status(trainer["id"]),
+                    "sub_prices": db.SUB_PRICES,
                 },
             })
         client_trainer_id = db.get_client_trainer(uid)

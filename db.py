@@ -347,6 +347,7 @@ def set_trainer_is_business(trainer_id: int, is_business: bool):
 SUB_GRACE_DAYS = 3  # после истечения даём эти дни продолжать работать как обычно
 SUB_TRIAL_DAYS = 14
 SUB_PLANS = {"trial": "Пробный период", "solo": "Соло", "business": "Бизнес"}
+SUB_PRICES = {"solo": 1490, "business": 2990}  # ₽/мес — показывается в приложении и в чате
 PAYMENT_REQUEST_COOLDOWN_HOURS = 6  # не спамим Георгию при повторных тапах "Оплатить"
 
 
