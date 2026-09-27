@@ -58,6 +58,11 @@ ADMIN_ID = 660762742  # твой telegram id — только тебе дост�
 MSK = ZoneInfo("Europe/Moscow")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").rstrip("/")  # базовый https-домен для мини-приложения
 PORT = int(os.getenv("PORT", "8080"))
+# Учётные данные магазина ЮKassa — появятся, когда его одобрят. Пока их нет (переменные
+# не заданы), автоматическая оплата подписки выключена сама собой, и webapp.py тихо
+# использует старый путь (позвать админа вручную) — см. yookassa_configured() там же.
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
 
 # user_id -> review_id: ждём от этого клиента комментарий следующим сообщением после того,
 # как он поставил оценку (тонкая, но осознанно простая замена полноценному FSM — сценарий
@@ -576,7 +581,10 @@ async def main():
 
     # Веб-сервер мини-приложения (API + статика) — крутится в этом же процессе,
     # рядом с long polling бота, на порту, который выдаёт Railway.
-    app = webapp.create_app(bot, BOT_TOKEN, bot_username, MINI_APP_URL, admin_id=ADMIN_ID)
+    app = webapp.create_app(
+        bot, BOT_TOKEN, bot_username, MINI_APP_URL, admin_id=ADMIN_ID,
+        yookassa_shop_id=YOOKASSA_SHOP_ID, yookassa_secret_key=YOOKASSA_SECRET_KEY,
+    )
     runner = aioweb.AppRunner(app)
     await runner.setup()
     site = aioweb.TCPSite(runner, "0.0.0.0", PORT)

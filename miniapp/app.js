@@ -322,17 +322,36 @@
       text.textContent = `${planLabel} закончился — новые записи приостановлены`;
       btn.hidden = false;
     }
-    btn.onclick = async () => {
-      btn.disabled = true;
-      try {
-        const res = await api("/api/provider/subscription/pay_request", { method: "POST", body: "{}" });
-        showToast(res.already_requested ? "Заявка уже отправлена, скоро с тобой свяжутся" : "Заявка отправлена — с тобой свяжутся для оплаты");
-      } catch (e) {
-        showToast("Не получилось отправить заявку, попробуй позже");
-      } finally {
-        btn.disabled = false;
-      }
+    btn.onclick = () => {
+      // В баннере нет выбора тарифа — продлеваем на том же, что уже был (после триала,
+      // по умолчанию, «Соло»; конкретный тариф можно сменить на экране Профиль).
+      const plan = sub.plan === "business" ? "business" : "solo";
+      requestPayment(plan, btn);
     };
+  }
+
+  function openPaymentUrl(url) {
+    if (tg && tg.openLink) tg.openLink(url);
+    else window.open(url, "_blank");
+  }
+
+  async function requestPayment(plan, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api("/api/provider/subscription/pay_request", {
+        method: "POST",
+        body: JSON.stringify({ plan }),
+      });
+      if (res.payment_url) {
+        openPaymentUrl(res.payment_url);
+      } else {
+        showToast(res.already_requested ? "Заявка уже отправлена, скоро с тобой свяжутся" : "Заявка отправлена — с тобой свяжутся для оплаты");
+      }
+    } catch (e) {
+      showToast("Не получилось начать оплату, попробуй позже");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function viewAsClient(trainerId) {
@@ -1579,21 +1598,7 @@
       </div>` : ""}
     `;
     Array.from(content.querySelectorAll(".sub-plan-btn")).forEach((btn) => {
-      btn.onclick = async () => {
-        const plan = btn.dataset.planBtn;
-        btn.disabled = true;
-        try {
-          const res = await api("/api/provider/subscription/pay_request", {
-            method: "POST",
-            body: JSON.stringify({ plan }),
-          });
-          showToast(res.already_requested ? "Заявка уже отправлена, скоро с тобой свяжутся" : "Заявка отправлена — с тобой свяжутся для оплаты");
-        } catch (e) {
-          showToast("Не получилось отправить заявку, попробуй позже");
-        } finally {
-          btn.disabled = false;
-        }
-      };
+      btn.onclick = () => requestPayment(btn.dataset.planBtn, btn);
     });
     el("pf-save").onclick = async () => {
       const name = el("pf-name").value.trim();

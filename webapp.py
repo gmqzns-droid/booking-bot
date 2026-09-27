@@ -8,16 +8,19 @@
 Работает в том же процессе, что и aiogram-бот (aiohttp-сервер поднимается
 рядом с long polling, см. main() в bot.py).
 """
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from urllib.parse import parse_qsl
 
+import aiohttp
 from aiohttp import web
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
@@ -25,6 +28,26 @@ import db
 import terminology
 
 logger = logging.getLogger(__name__)
+
+YOOKASSA_API_URL = "https://api.yookassa.ru/v3"
+
+
+async def _yookassa_request(method: str, path: str, shop_id: str, secret_key: str,
+                             json_body: dict | None = None, idempotence_key: str | None = None) -> tuple[int, dict]:
+    """Низкоуровневый вызов ЮKassa REST API (Basic Auth shop_id:secret_key). Используем сырой
+    aiohttp вместо их SDK — это ровно два эндпоинта (создать платёж, проверить платёж),
+    не стоит тащить отдельную зависимость ради этого."""
+    auth = base64.b64encode(f"{shop_id}:{secret_key}".encode()).decode()
+    headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+    if idempotence_key:
+        headers["Idempotence-Key"] = idempotence_key
+    async with aiohttp.ClientSession() as session:
+        async with session.request(
+            method, f"{YOOKASSA_API_URL}{path}", headers=headers,
+            json=json_body, timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            data = await resp.json()
+            return resp.status, data
 
 MINIAPP_DIR = Path(__file__).parent / "miniapp"
 INIT_DATA_MAX_AGE = 24 * 60 * 60  # сутки — старше не принимаем (защита от replay)
@@ -194,7 +217,8 @@ async def error_middleware(request: web.Request, handler):
         return web.json_response({"error": "internal error"}, status=500)
 
 
-def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", admin_id: int | None = None) -> web.Application:
+def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", admin_id: int | None = None,
+               yookassa_shop_id: str | None = None, yookassa_secret_key: str | None = None) -> web.Application:
     app = web.Application(middlewares=[error_middleware])
 
     def open_app_kb() -> InlineKeyboardMarkup | None:
@@ -257,30 +281,65 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", a
             status=402,
         )
 
+    def yookassa_configured() -> bool:
+        return bool(yookassa_shop_id and yookassa_secret_key)
+
     @require_auth
     async def handle_subscription_pay_request(request: web.Request, user: dict) -> web.Response:
-        """Специалист жмёт «Оплатить» в баннере триала/подписки. Пока в боте нет прямой
-        интеграции с ЮKassa (нужен подключённый магазин с shop_id/секретным ключом) —
-        это просто аккуратно передаёт админу, что человек готов платить, чтобы тот отправил
-        ссылку на оплату вручную и потом отметил /pay."""
+        """Специалист жмёт «Оплатить» в баннере триала/подписки.
+
+        Как только в переменных окружения появляются YOOKASSA_SHOP_ID и
+        YOOKASSA_SECRET_KEY (магазин одобрен), эта ручка создаёт настоящий платёж в ЮKassa
+        и отдаёт мини-аппу ссылку на оплату картой — никакого участия админа. До этого
+        момента (сейчас) остаётся прежний путь: аккуратно сообщить админу, что человек готов
+        платить, чтобы тот прислал ссылку вручную и отметил /pay."""
         trainer = db.get_trainer(user["id"])
         if not trainer:
             return web.json_response({"error": "not a provider"}, status=403)
+        body = {}
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            pass
+        wanted_plan = body.get("plan") if isinstance(body, dict) else None
+        wanted_plan = wanted_plan if wanted_plan in db.SUB_PRICES else None
+
+        if yookassa_configured():
+            if not wanted_plan:
+                return web.json_response({"error": "plan required"}, status=400)
+            amount = db.SUB_PRICES[wanted_plan]
+            plan_label = db.SUB_PLANS[wanted_plan]
+            return_url = f"{mini_app_url.rstrip('/')}/miniapp/index.html" if mini_app_url else "https://t.me"
+            idem_key = str(uuid.uuid4())
+            status, data = await _yookassa_request(
+                "POST", "/payments", yookassa_shop_id, yookassa_secret_key,
+                json_body={
+                    "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
+                    "capture": True,
+                    "confirmation": {"type": "redirect", "return_url": return_url},
+                    "description": f"Подписка «{plan_label}» на бота — 1 мес ({trainer['name']})",
+                    "metadata": {"trainer_id": trainer["id"], "plan": wanted_plan, "months": 1},
+                },
+                idempotence_key=idem_key,
+            )
+            if status not in (200, 201) or "id" not in data:
+                logger.warning("ЮKassa create payment failed: status=%s data=%s", status, data)
+                return web.json_response({"error": "payment_failed"}, status=502)
+            db.record_payment_created(data["id"], trainer["id"], wanted_plan, 1, amount)
+            confirmation_url = (data.get("confirmation") or {}).get("confirmation_url")
+            if not confirmation_url:
+                return web.json_response({"error": "payment_failed"}, status=502)
+            return web.json_response({"ok": True, "payment_url": confirmation_url})
+
+        # --- фолбэк без подключённой ЮKassa: как раньше, зовём админа руками ---
         if not admin_id:
             return web.json_response({"error": "unavailable"}, status=503)
         if not db.can_request_payment(user["id"]):
             return web.json_response({"ok": True, "already_requested": True})
         db.mark_payment_requested(user["id"])
         sub = db.get_subscription_status(user["id"])
-        body = {}
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            pass
         # Какой тариф человек выбрал на экране подписки — просто подсказка админу, ни на
         # что не влияет сама по себе (окончательно тариф выставляется командой /pay).
-        wanted_plan = body.get("plan") if isinstance(body, dict) else None
-        wanted_plan = wanted_plan if wanted_plan in db.SUB_PRICES else None
         plan_label = db.SUB_PLANS.get(wanted_plan or sub["plan"], sub["plan"] or "—")
         price_line = f" ({db.SUB_PRICES[wanted_plan]}₽/мес)" if wanted_plan else ""
         username_line = f" (@{esc(user['username'])})" if user.get("username") else ""
@@ -296,6 +355,59 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", a
         except Exception:
             logger.warning("Не удалось отправить админу запрос на оплату от %s", user["id"])
             return web.json_response({"error": "internal error"}, status=500)
+        return web.json_response({"ok": True})
+
+    async def handle_yookassa_webhook(request: web.Request) -> web.Response:
+        """ЮKassa шлёт сюда уведомление при смене статуса платежа. Базовые HTTP-уведомления
+        ЮKassa НЕ подписаны — тело запроса нельзя считать доверенным само по себе, поэтому
+        мы игнорируем присланный статус и всегда перепроверяем платёж напрямую через API
+        своими же учётными данными (GET /payments/{id}), и продлеваем подписку только если
+        ЮKassa на своей стороне подтверждает succeeded."""
+        if not yookassa_configured():
+            return web.json_response({"error": "unavailable"}, status=503)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "bad json"}, status=400)
+        payment_id = ((body or {}).get("object") or {}).get("id")
+        if not payment_id:
+            return web.json_response({"error": "bad payload"}, status=400)
+
+        status, data = await _yookassa_request(
+            "GET", f"/payments/{payment_id}", yookassa_shop_id, yookassa_secret_key,
+        )
+        if status != 200 or data.get("status") != "succeeded":
+            # Не succeeded (canceled/waiting_for_capture/ещё что-то) — не наша забота,
+            # просто подтверждаем получение, чтобы ЮKassa не долбила ретраями.
+            return web.json_response({"ok": True})
+
+        record = db.mark_payment_succeeded(payment_id)
+        if not record:
+            # Уже обработан раньше (повторный webhook на тот же платёж) — не продлеваем второй раз.
+            return web.json_response({"ok": True})
+
+        trainer_id = record["trainer_id"]
+        plan = record["plan"]
+        months = record["months"]
+        new_until = db.set_subscription(trainer_id, plan, months)
+        trainer = db.get_trainer(trainer_id)
+        plan_label = db.SUB_PLANS.get(plan, plan)
+        try:
+            await bot.send_message(
+                trainer_id,
+                f"✅ Оплата получена — тариф «{plan_label}», действует до {new_until}. Спасибо!",
+            )
+        except Exception:
+            logger.warning("Не удалось уведомить специалиста %s об успешной оплате", trainer_id)
+        if admin_id and trainer:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    f"💰 Автоматическая оплата: {esc(trainer['name'])} (id {trainer_id}) — "
+                    f"«{plan_label}», продлено до {new_until}.",
+                )
+            except Exception:
+                logger.warning("Не удалось уведомить админа об автооплате %s", trainer_id)
         return web.json_response({"ok": True})
 
     # ---------- whoami / профиль ----------
@@ -1555,6 +1667,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "", a
     app.router.add_post("/api/provider/register", handle_provider_register)
     app.router.add_post("/api/provider/profile", handle_provider_profile_update)
     app.router.add_post("/api/provider/subscription/pay_request", handle_subscription_pay_request)
+    app.router.add_post("/api/payments/yookassa/webhook", handle_yookassa_webhook)
     app.router.add_get("/api/provider/services", handle_services_list)
     app.router.add_post("/api/provider/services/add", handle_services_add)
     app.router.add_post("/api/provider/services/update", handle_services_update)

@@ -256,6 +256,23 @@ def init_db():
         _ensure_column(conn, "trainers", "sub_plan", "TEXT")
         _ensure_column(conn, "trainers", "sub_until", "TEXT")
         _ensure_column(conn, "trainers", "sub_payment_requested_at", "TEXT")
+        # Платежи через ЮKassa (когда подключён магазин). id — платёж в самой ЮKassa,
+        # НЕ автоинкремент — так INSERT OR IGNORE на создании и повторные webhook-уведомления
+        # об одном и том же платеже естественным образом не дают продлить подписку дважды.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS payments (
+                yk_payment_id TEXT PRIMARY KEY,
+                trainer_id INTEGER NOT NULL,
+                plan TEXT NOT NULL,
+                months INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',  -- pending | succeeded
+                created_at TEXT NOT NULL,
+                succeeded_at TEXT
+            )
+            """
+        )
 
         # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
         # специалист одновременно, вторая привязка тихо затирала первую). Переносим
@@ -448,6 +465,37 @@ def list_subscriptions() -> list[dict]:
         info = get_subscription_status(row["id"])
         result.append({"id": row["id"], "name": row["name"], **info})
     return result
+
+
+def record_payment_created(payment_id: str, trainer_id: int, plan: str, months: int, amount: int):
+    """Вызывается сразу после успешного создания платежа в ЮKassa (пока ещё не оплачен) —
+    чтобы webhook потом знал, кому и на сколько продлевать подписку."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO payments (yk_payment_id, trainer_id, plan, months, amount, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (payment_id, trainer_id, plan, months, amount, now_msk().strftime("%Y-%m-%d %H:%M")),
+        )
+
+
+def get_payment(payment_id: str):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM payments WHERE yk_payment_id=?", (payment_id,)).fetchone()
+
+
+def mark_payment_succeeded(payment_id: str) -> dict | None:
+    """Идемпотентно: возвращает данные платежа и переводит его в succeeded, только если он
+    ещё не был обработан (первый раз) — иначе (повторный webhook от ЮKassa на тот же платёж)
+    возвращает None, чтобы вызывающий код не продлил подписку дважды за одну оплату."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM payments WHERE yk_payment_id=?", (payment_id,)).fetchone()
+        if not row or row["status"] == "succeeded":
+            return None
+        conn.execute(
+            "UPDATE payments SET status='succeeded', succeeded_at=? WHERE yk_payment_id=?",
+            (now_msk().strftime("%Y-%m-%d %H:%M"), payment_id),
+        )
+        return dict(row)
 
 
 # ---------- Филиалы (для бизнес-аккаунтов с сетью — необязательная надстройка;
