@@ -244,6 +244,19 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             return await handler(request, user)
         return wrapped
 
+    def subscription_block(trainer_id: int) -> web.Response | None:
+        """Если у специалиста просроченная (за пределами льготного периода) подписка на бота —
+        возвращает готовый ответ 402, который нужно сразу вернуть из хендлера, не создавая
+        новую запись. Специалистов, которых вообще не заводили на биллинг (sub_plan=NULL —
+        то есть все, кто был в базе до этой фичи), это не касается — для них всегда None."""
+        status = db.get_subscription_status(trainer_id)
+        if status["status"] != "blocked":
+            return None
+        return web.json_response(
+            {"error": "subscription_blocked", "message": "Специалист приостановил приём новых записей — подписка на сервис не оплачена."},
+            status=402,
+        )
+
     # ---------- whoami / профиль ----------
 
     @require_auth
@@ -772,6 +785,9 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         человека, который ботом ещё не пользовался (name)."""
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
+        blocked_resp = subscription_block(user["id"])
+        if blocked_resp:
+            return blocked_resp
         body = await request.json()
         try:
             slot_id = int(body.get("slot_id"))
@@ -1265,6 +1281,9 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             return web.json_response({"error": "not found"}, status=404)
         if db.is_client_blocked(slot_pre["trainer_id"], user["id"]):
             return web.json_response({"error": "blocked"}, status=403)
+        blocked_resp = subscription_block(slot_pre["trainer_id"])
+        if blocked_resp:
+            return blocked_resp
 
         service = None
         raw_service_id = body.get("service_id")

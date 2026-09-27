@@ -224,6 +224,116 @@ async def cmd_backup_now(message: Message):
     await send_db_backup()
 
 
+SUB_PLAN_LABELS = {"solo": "Соло", "business": "Бизнес"}
+
+
+@dp.message(Command("subs"))
+async def cmd_subs(message: Message):
+    """Только для тебя — список специалистов, которых завели на биллинг, и статус их подписки."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    rows = db.list_subscriptions()
+    if not rows:
+        await message.answer(
+            "Пока никто не заведён на биллинг — все специалисты работают без ограничений.\n"
+            "Когда специалист оплатит подписку, отметь это командой:\n"
+            "<code>/pay &lt;id специалиста&gt; solo</code> или <code>/pay &lt;id&gt; business</code>"
+        )
+        return
+    icons = {"active": "✅", "grace": "⏳", "blocked": "🚫"}
+    lines = ["<b>Подписки специалистов</b>"]
+    for r in rows:
+        plan_label = SUB_PLAN_LABELS.get(r["plan"], r["plan"])
+        lines.append(
+            f"{icons.get(r['status'], '')} {esc(r['name'])} (id {r['id']}) — {plan_label}, до {r['until']}"
+        )
+    await message.answer("\n".join(lines))
+
+
+@dp.message(Command("pay"))
+async def cmd_pay(message: Message, command: CommandObject):
+    """Только для тебя — отметить оплату подписки после того, как увидел платёж в ЮKassa:
+    /pay <id специалиста> <solo|business> [месяцев]"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (command.args or "").split()
+    if len(parts) < 2 or parts[1] not in SUB_PLAN_LABELS:
+        await message.answer(
+            "Формат: <code>/pay &lt;id специалиста&gt; &lt;solo|business&gt; [месяцев]</code>\n"
+            "Например: <code>/pay 123456789 solo</code> — продлить на 1 месяц, "
+            "или <code>/pay 123456789 business 3</code> — сразу на 3."
+        )
+        return
+    try:
+        trainer_id = int(parts[0])
+    except ValueError:
+        await message.answer("Первым параметром должен быть числовой id специалиста.")
+        return
+    months = 1
+    if len(parts) >= 3:
+        try:
+            months = max(1, int(parts[2]))
+        except ValueError:
+            pass
+    trainer = db.get_trainer(trainer_id)
+    if not trainer:
+        await message.answer("Специалист с таким id не найден.")
+        return
+    plan = parts[1]
+    new_until = db.set_subscription(trainer_id, plan, months)
+    await message.answer(
+        f"✅ {esc(trainer['name'])} — тариф «{SUB_PLAN_LABELS[plan]}», оплачено до {new_until}."
+    )
+    try:
+        await bot.send_message(
+            trainer_id,
+            f"✅ Оплата подписки на бота получена — тариф «{SUB_PLAN_LABELS[plan]}», действует до {new_until}.",
+        )
+    except Exception:
+        logger.warning("Не удалось уведомить специалиста %s об оплате", trainer_id)
+
+
+@dp.message(Command("unpay"))
+async def cmd_unpay(message: Message, command: CommandObject):
+    """Только для тебя — снять специалиста с биллинга совсем (обратно в режим без ограничений)."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        trainer_id = int((command.args or "").strip())
+    except ValueError:
+        await message.answer("Формат: <code>/unpay &lt;id специалиста&gt;</code>")
+        return
+    db.clear_subscription(trainer_id)
+    await message.answer("Готово, специалист снят с биллинга — ограничений больше нет.")
+
+
+async def check_subscriptions():
+    """Раз в день: специалистам, чья подписка только что перешла в льготный период или уже
+    заблокирована, шлём напоминание. Тех, кого не завели на биллинг (sub_plan=NULL), это
+    не касается вообще."""
+    for row in db.list_subscriptions():
+        if row["status"] == "grace":
+            try:
+                await bot.send_message(
+                    row["id"],
+                    f"⏰ Подписка на бота истекла {row['until']}. У тебя есть ещё немного времени "
+                    "на оплату, пока новые записи не остановились — свяжись с "
+                    f"{SUPPORT_CONTACT}, чтобы продлить.",
+                )
+            except Exception:
+                logger.warning("Не удалось напомнить специалисту %s о подписке (grace)", row["id"])
+        elif row["status"] == "blocked":
+            try:
+                await bot.send_message(
+                    row["id"],
+                    "🚫 Подписка на бота не оплачена — приём новых записей приостановлен "
+                    f"(текущие записи и расписание видны как раньше). Чтобы возобновить, "
+                    f"свяжись с {SUPPORT_CONTACT}.",
+                )
+            except Exception:
+                logger.warning("Не удалось уведомить специалиста %s о блокировке подписки", row["id"])
+
+
 @dp.message(F.document)
 async def cmd_restore_db(message: Message):
     """Только для тебя, аварийный сценарий — восстановить базу из файла бэкапа.
@@ -458,6 +568,7 @@ async def main():
     scheduler.add_job(send_review_requests, "interval", minutes=20)
     scheduler.add_job(send_db_backup, "cron", hour=6, minute=0, timezone=MSK)
     scheduler.add_job(db.generate_all_regular_occurrences, "cron", hour=4, minute=15, timezone=MSK)
+    scheduler.add_job(check_subscriptions, "cron", hour=9, minute=0, timezone=MSK)
     scheduler.start()
 
     # Веб-сервер мини-приложения (API + статика) — крутится в этом же процессе,

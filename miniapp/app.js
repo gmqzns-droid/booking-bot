@@ -691,7 +691,11 @@
         closeSheet();
         if (onDone) onDone(); else renderProviderSchedule();
       } catch (e) {
-        showToast(e.status === 409 ? "Слот уже занят" : "Не получилось записать");
+        showToast(
+          e.status === 409 ? "Слот уже занят"
+          : e.message === "subscription_blocked" ? "Подписка на сервис не оплачена — новые записи приостановлены"
+          : "Не получилось записать"
+        );
       }
     };
   }
@@ -2101,6 +2105,7 @@
           slot_conflict: "На это время накладывается другая запись — выбери другое время",
           blocked: "К сожалению, запись к этому специалисту сейчас недоступна",
           name_required: "Укажи своё имя перед записью",
+          subscription_blocked: "Специалист временно приостановил приём новых записей",
         };
         const errCode = (e && e.message) || "";
         showToast(messages[errCode] || (e.status === 409 ? "Увы, время уже заняли" : "Не получилось записаться"));

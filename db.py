@@ -249,6 +249,12 @@ def init_db():
         _ensure_column(conn, "slots", "regular_id", "INTEGER")
         _ensure_column(conn, "slots", "group_id", "TEXT")
         _ensure_column(conn, "slots", "booked_via", "TEXT")
+        # Подписка специалиста на сам сервис (тренер платит Георгию, не наоборот).
+        # sub_plan=NULL — старый/незаведённый в биллинг специалист, для него никаких
+        # ограничений нет (чтобы не сломать текущих пользователей при выкатке фичи).
+        # Ограничения начинают действовать только для тех, кому явно назначили план.
+        _ensure_column(conn, "trainers", "sub_plan", "TEXT")
+        _ensure_column(conn, "trainers", "sub_until", "TEXT")
 
         # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
         # специалист одновременно, вторая привязка тихо затирала первую). Переносим
@@ -333,6 +339,70 @@ def set_trainer_is_business(trainer_id: int, is_business: bool):
         conn.execute(
             "UPDATE trainers SET is_business=? WHERE id=?", (1 if is_business else 0, trainer_id)
         )
+
+
+# ---------- Подписка специалиста на бота (тренер -> Георгий) ----------
+
+SUB_GRACE_DAYS = 3  # после истечения даём эти дни продолжать работать как обычно
+SUB_PLANS = {"solo": "Соло", "business": "Бизнес"}
+
+
+def set_subscription(trainer_id: int, plan: str, months: int = 1):
+    """Ручное подтверждение оплаты (админ увидел платёж в ЮKassa и вызвал это).
+    Продлевает от текущей даты окончания, если она ещё не прошла (не "сгорает" остаток
+    при досрочной оплате), иначе — от текущего момента."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT sub_until FROM trainers WHERE id=?", (trainer_id,)).fetchone()
+        now = now_msk()
+        base = now
+        if row and row["sub_until"]:
+            try:
+                current_until = datetime.strptime(row["sub_until"], "%Y-%m-%d %H:%M").replace(tzinfo=MSK)
+                if current_until > now:
+                    base = current_until
+            except ValueError:
+                pass
+        new_until = (base + timedelta(days=30 * months)).strftime("%Y-%m-%d %H:%M")
+        conn.execute(
+            "UPDATE trainers SET sub_plan=?, sub_until=? WHERE id=?", (plan, new_until, trainer_id)
+        )
+        return new_until
+
+
+def clear_subscription(trainer_id: int):
+    """Снять с биллинга совсем (специалист снова без ограничений) — например, для теста."""
+    with get_conn() as conn:
+        conn.execute("UPDATE trainers SET sub_plan=NULL, sub_until=NULL WHERE id=?", (trainer_id,))
+
+
+def get_subscription_status(trainer_id: int) -> dict:
+    """status: 'none' (не на биллинге — без ограничений), 'active', 'grace' (просрочено,
+    но ещё в льготном периоде), 'blocked' (просрочено, льготный период истёк)."""
+    trainer = get_trainer(trainer_id)
+    if not trainer or not trainer["sub_plan"] or not trainer["sub_until"]:
+        return {"status": "none", "plan": None, "until": None}
+    until = datetime.strptime(trainer["sub_until"], "%Y-%m-%d %H:%M").replace(tzinfo=MSK)
+    now = now_msk()
+    if now <= until:
+        status = "active"
+    elif now <= until + timedelta(days=SUB_GRACE_DAYS):
+        status = "grace"
+    else:
+        status = "blocked"
+    return {"status": status, "plan": trainer["sub_plan"], "until": trainer["sub_until"]}
+
+
+def list_subscriptions() -> list[dict]:
+    """Для админской команды /subs — по всем специалистам на биллинге."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, sub_plan, sub_until FROM trainers WHERE sub_plan IS NOT NULL ORDER BY sub_until"
+        ).fetchall()
+    result = []
+    for row in rows:
+        info = get_subscription_status(row["id"])
+        result.append({"id": row["id"], "name": row["name"], **info})
+    return result
 
 
 # ---------- Филиалы (для бизнес-аккаунтов с сетью — необязательная надстройка;
