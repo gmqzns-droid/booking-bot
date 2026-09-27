@@ -1,11 +1,20 @@
 """Слой работы с базой данных (SQLite). v4: контакты, привязка клиента к тренеру, часовой пояс."""
+import os
 import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-DB_PATH = "booking.db"
+# Railway монтирует персистентный Volume (если он подключён к сервису) и
+# прокидывает его путь в переменную окружения RAILWAY_VOLUME_MOUNT_PATH.
+# Если файл базы лежит просто в рабочей директории контейнера — при каждом
+# деплое (git push) контейнер пересобирается заново и файл теряется.
+# Поэтому база всегда кладётся в примонтированный volume, когда он есть,
+# и только если переменной нет (например, локальный запуск для разработки) —
+# используется файл рядом с кодом, как раньше.
+_VOLUME_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+DB_PATH = os.path.join(_VOLUME_DIR, "booking.db") if _VOLUME_DIR else "booking.db"
 MSK = ZoneInfo("Europe/Moscow")
 
 

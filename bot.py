@@ -216,6 +216,34 @@ async def cmd_reset_all(message: Message):
     await message.answer("🗑 Готово, база очищена.")
 
 
+@dp.message(Command("backup_now"))
+async def cmd_backup_now(message: Message):
+    """Только для тебя — прислать бэкап базы прямо сейчас, не дожидаясь ночной рассылки в 6:00."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await send_db_backup()
+
+
+@dp.message(F.document)
+async def cmd_restore_db(message: Message):
+    """Только для тебя, аварийный сценарий — восстановить базу из файла бэкапа.
+    Пришли .db-файл (тот, что бот сам присылает в бэкапах) с подписью
+    ровно '/restore_db confirm'. Файл полностью заменит текущую базу,
+    поэтому перед этим стоит на всякий случай сделать /backup_now."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    caption = (message.caption or "").strip()
+    if caption != "/restore_db confirm":
+        return
+    tmp_path = db.DB_PATH + ".restore_tmp"
+    await bot.download(message.document, destination=tmp_path)
+    os.replace(tmp_path, db.DB_PATH)
+    await message.answer(
+        "✅ База восстановлена из присланного файла.\n"
+        "Проверь, что всё на месте (открой приложение), и на всякий случай ещё раз всё перепроверь."
+    )
+
+
 # ---------- Отзывы после визита ----------
 
 @dp.callback_query(F.data.startswith("rv:"))
