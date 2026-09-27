@@ -239,6 +239,7 @@ def init_db():
         _ensure_column(conn, "branches", "phone", "TEXT")
         _ensure_column(conn, "slots", "regular_id", "INTEGER")
         _ensure_column(conn, "slots", "group_id", "TEXT")
+        _ensure_column(conn, "slots", "booked_via", "TEXT")
 
         # Миграция: раньше clients.id был первичным ключом (один клиент — только ОДИН
         # специалист одновременно, вторая привязка тихо затирала первую). Переносим
@@ -1125,6 +1126,95 @@ def trainer_stats(trainer_id: int, staff_id: int | None, days: int) -> dict:
     }
 
 
+def staff_utilization(trainer_id: int, days: int):
+    """Загрузка по сотрудникам за последние `days` дней: сколько слотов было выставлено
+    (не отменённых) и какая доля из них забронирована — помогает понять, кого из команды
+    стоит догрузить клиентами, а у кого и так всё расписание забито. Каждое место в
+    групповом занятии считается отдельным слотом, как и везде в статистике."""
+    with get_conn() as conn:
+        since = (now_msk() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+        until = now_msk().strftime("%Y-%m-%d %H:%M")
+        rows = conn.execute(
+            "SELECT staff_id, staff_name, "
+            "SUM(CASE WHEN status='booked' THEN 1 ELSE 0 END) AS booked, "
+            "COUNT(*) AS total "
+            "FROM slots WHERE trainer_id=? AND status IN ('free','booked') "
+            "AND slot_dt >= ? AND slot_dt < ? GROUP BY staff_id",
+            (trainer_id, since, until),
+        ).fetchall()
+    result = []
+    for r in rows:
+        total = r["total"] or 0
+        booked = r["booked"] or 0
+        result.append({
+            "staff_id": r["staff_id"],
+            "staff_name": r["staff_name"],
+            "booked": booked,
+            "total": total,
+            "rate": round(100 * booked / total) if total else 0,
+        })
+    result.sort(key=lambda x: -x["rate"])
+    return result
+
+
+def booking_sources(trainer_id: int, staff_id: int | None, days: int) -> dict:
+    """Разбивка активных записей за период по тому, как они появились: клиент записался
+    сам через приложение, специалист вписал его вручную, или это плановое вхождение
+    постоянной записи (абонемента)."""
+    with get_conn() as conn:
+        since = (now_msk() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+        until = now_msk().strftime("%Y-%m-%d %H:%M")
+        params: list = [trainer_id, since, until]
+        staff_clause = ""
+        if staff_id:
+            staff_clause = "AND staff_id=?"
+            params.append(staff_id)
+        rows = conn.execute(
+            f"SELECT regular_id, booked_via FROM slots WHERE trainer_id=? AND status='booked' "
+            f"AND slot_dt >= ? AND slot_dt < ? {staff_clause}",
+            params,
+        ).fetchall()
+    regular = manual = client = 0
+    for r in rows:
+        if r["regular_id"]:
+            regular += 1
+        elif "booked_via" in r.keys() and r["booked_via"] == "manual":
+            manual += 1
+        else:
+            client += 1
+    return {"client": client, "manual": manual, "regular": regular, "total": regular + manual + client}
+
+
+def top_clients(trainer_id: int, limit: int = 10):
+    """Клиенты с наибольшей суммарной выручкой за всё время (LTV) — по текущей цене услуги
+    на момент запроса, как и в trainer_stats (бот платежи не проводит, это ориентир).
+    Учитывает только реальных клиентов бота (у которых есть client_id) — визиты, вписанные
+    специалистом вручную для человека без аккаунта, между собой неразличимы и в LTV
+    по отдельным людям попасть не могут."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT slots.client_id AS client_id, "
+            "COALESCE(cl.custom_name, slots.client_name) AS name, "
+            "COUNT(*) AS visits, "
+            "SUM(COALESCE(services.price, 0)) AS revenue, "
+            "MAX(slots.slot_dt) AS last_visit "
+            "FROM slots "
+            "LEFT JOIN services ON services.id = slots.service_id "
+            "LEFT JOIN client_links cl ON cl.client_id = slots.client_id AND cl.trainer_id = slots.trainer_id "
+            "WHERE slots.trainer_id=? AND slots.status='booked' AND slots.no_show=0 "
+            "AND slots.client_id IS NOT NULL "
+            "GROUP BY slots.client_id ORDER BY revenue DESC, visits DESC LIMIT ?",
+            (trainer_id, limit),
+        ).fetchall()
+    return [
+        {
+            "client_id": r["client_id"], "name": r["name"], "visits": r["visits"],
+            "revenue": r["revenue"] or 0, "last_visit": r["last_visit"],
+        }
+        for r in rows
+    ]
+
+
 def list_slots_in_range(trainer_id: int, staff_id: int, start_date: str, end_date: str):
     """Все ещё активные (free+booked) слоты сотрудника в диапазоне дат [start_date, end_date]
     включительно — используется для массового закрытия периода (отпуск/выходной)."""
@@ -1160,12 +1250,17 @@ def book_slot(
     service_id: int | None = None,
     service_name: str | None = None,
     client_custom_name: str | None = None,
+    booked_via: str | None = None,
 ) -> bool:
+    """booked_via: 'client' — клиент записался сам, 'manual' — специалист вписал вручную.
+    None (например, у старых вызовов) равнозначен 'client' для аналитики источников записей —
+    так исторически и было, пока не появилась ручная запись специалистом."""
     with get_conn() as conn:
         cur = conn.execute(
             "UPDATE slots SET status='booked', client_id=?, client_name=?, client_username=?, "
-            "service_id=?, service_name=?, client_custom_name=? WHERE id=? AND status='free'",
-            (client_id, client_name, client_username, service_id, service_name, client_custom_name, slot_id),
+            "service_id=?, service_name=?, client_custom_name=?, booked_via=? WHERE id=? AND status='free'",
+            (client_id, client_name, client_username, service_id, service_name, client_custom_name,
+             booked_via, slot_id),
         )
         return cur.rowcount > 0
 

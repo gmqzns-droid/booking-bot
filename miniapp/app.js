@@ -1461,6 +1461,10 @@
         <div class="card-title">Статистика</div>
         <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
       </div>
+      <div class="card" id="pf-analytics-card">
+        <div class="card-title">Подробная аналитика</div>
+        <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
+      </div>
       <div class="card" id="pf-promos-card">
         <div class="card-title">Промокоды</div>
         <div class="center" style="padding:20px 0"><div class="spinner"></div></div>
@@ -1535,6 +1539,7 @@
     };
 
     renderStatsCard();
+    renderAnalyticsCard();
     renderPromosCard();
 
     (async () => {
@@ -1601,6 +1606,7 @@
     Array.from(el("stats-period-chips").children).forEach((c) => c.onclick = () => {
       STATS_PERIOD = c.dataset.period;
       renderStatsCard();
+      renderAnalyticsCard();
     });
     let data;
     try {
@@ -1616,6 +1622,53 @@
       <div class="card-row"><span class="muted">Средний чек</span><b>${data.avg_check ? data.avg_check + "₽" : "—"}</b></div>
       <div class="card-row"><span class="muted">Неявки</span><b>${data.no_shows}${data.no_shows ? " (" + data.no_show_rate + "%)" : ""}</b></div>
     `;
+  }
+
+  async function renderAnalyticsCard() {
+    const card = el("pf-analytics-card");
+    if (!card) return;
+    let data;
+    try {
+      data = await api(`/api/provider/analytics?period=${STATS_PERIOD}`, { method: "GET" });
+    } catch (e) {
+      card.innerHTML = '<div class="card-title">Подробная аналитика</div><p class="muted">Не удалось загрузить</p>';
+      return;
+    }
+
+    let html = '<div class="card-title">Подробная аналитика</div>';
+    let hasAny = false;
+
+    if (PROVIDER.is_business && data.staff_utilization && data.staff_utilization.length > 1) {
+      hasAny = true;
+      html += '<div class="section-label" style="margin-top:0">Загрузка по сотрудникам</div>';
+      data.staff_utilization.forEach((s) => {
+        html += `<div class="card-row"><span class="muted">${escapeHtml(s.staff_name || "—")}</span><b>${s.rate}% <span class="muted">(${s.booked}/${s.total})</span></b></div>`;
+      });
+    }
+
+    const src = data.sources;
+    if (src && src.total) {
+      hasAny = true;
+      html += '<div class="section-label"' + (hasAny ? "" : ' style="margin-top:0"') + '>Откуда записи</div>';
+      html += `<div class="card-row"><span class="muted">Клиент сам записался</span><b>${src.client}</b></div>`;
+      html += `<div class="card-row"><span class="muted">Вписаны вручную</span><b>${src.manual}</b></div>`;
+      html += `<div class="card-row"><span class="muted">По абонементу</span><b>${src.regular}</b></div>`;
+    }
+
+    if (data.top_clients && data.top_clients.length) {
+      hasAny = true;
+      html += '<div class="section-label">Топ клиентов (за всё время)</div>';
+      data.top_clients.forEach((c, i) => {
+        const value = c.revenue ? `${c.revenue}₽` : `${c.visits} ${plural(c.visits, "визит", "визита", "визитов")}`;
+        html += `<div class="card-row"><span class="muted">${i + 1}. ${escapeHtml(c.name || "Без имени")}</span><b>${value}</b></div>`;
+      });
+    }
+
+    if (!hasAny) {
+      html += '<p class="muted">Пока недостаточно данных за этот период.</p>';
+    }
+
+    card.innerHTML = html;
   }
 
   async function renderPromosCard() {

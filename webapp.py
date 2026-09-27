@@ -774,6 +774,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             slot["id"], client_id, client_name, client_username,
             service["id"] if service else None,
             service["name"] if service else None,
+            booked_via="manual",
         )
         if not ok:
             return web.json_response({"error": "slot taken"}, status=409)
@@ -1003,6 +1004,27 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
         return web.json_response(db.trainer_stats(user["id"], staff_id, days))
 
     @require_auth
+    async def handle_provider_analytics(request: web.Request, user: dict) -> web.Response:
+        """Расширенная аналитика: загрузка по сотрудникам, откуда пришли записи (сам клиент /
+        вручную специалистом / по абонементу) и топ клиентов по выручке за всё время (LTV)."""
+        if not db.get_trainer(user["id"]):
+            return web.json_response({"error": "not a provider"}, status=403)
+        staff_id_raw = request.query.get("staff_id")
+        staff_id = None
+        if staff_id_raw:
+            staff = _staff_for_provider(user["id"], staff_id_raw)
+            if not staff:
+                return web.json_response({"error": "bad staff_id"}, status=400)
+            staff_id = staff["id"]
+        period = request.query.get("period", "week")
+        days = 30 if period == "month" else 7
+        return web.json_response({
+            "staff_utilization": db.staff_utilization(user["id"], days),
+            "sources": db.booking_sources(user["id"], staff_id, days),
+            "top_clients": db.top_clients(user["id"], limit=10),
+        })
+
+    @require_auth
     async def handle_provider_reviews(request: web.Request, user: dict) -> web.Response:
         if not db.get_trainer(user["id"]):
             return web.json_response({"error": "not a provider"}, status=403)
@@ -1211,6 +1233,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
             service_id=service["id"] if service else None,
             service_name=service["name"] if service else None,
             client_custom_name=custom_name,
+            booked_via="client",
         )
         if not ok:
             return web.json_response({"error": "slot taken"}, status=409)
@@ -1423,6 +1446,7 @@ def create_app(bot, bot_token: str, bot_username: str, mini_app_url: str = "") -
     app.router.add_post("/api/provider/clients/block", handle_client_block)
     app.router.add_post("/api/provider/broadcast", handle_provider_broadcast)
     app.router.add_get("/api/provider/stats", handle_provider_stats)
+    app.router.add_get("/api/provider/analytics", handle_provider_analytics)
     app.router.add_get("/api/provider/reviews", handle_provider_reviews)
     app.router.add_get("/api/provider/promos", handle_promos_list)
     app.router.add_post("/api/provider/promos/add", handle_promos_add)
