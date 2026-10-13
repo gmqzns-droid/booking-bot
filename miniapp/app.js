@@ -24,6 +24,16 @@
 
   // ---------- утилиты ----------
 
+  // Слова «клиент/ученик/пациент» в нужной форме под профессию специалиста (terminology.py).
+  function term(key, fallback) {
+    const t = PROVIDER && PROVIDER.terms;
+    return escapeHtml((t && t[key]) || fallback);
+  }
+  function termCap(key, fallback) {
+    const w = term(key, fallback);
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }
+
   function applyTheme() {
     // Приложение использует собственный фирменный стиль ("тёплый бутик"),
     // независимый от цветовой темы Telegram — тему клиента сюда намеренно не подтягиваем.
@@ -1345,16 +1355,16 @@
     regulars.forEach((r) => { REGULARS_BY_ID[r.id] = r; });
     let html = '<div class="card">';
     html += `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:${regulars.length ? "10px" : "4px"}">
-      <div class="card-title" style="margin:0">Постоянные ученики</div>
+      <div class="card-title" style="margin:0">Постоянные ${termCap("client_pl", "клиенты")}</div>
       <button class="btn btn-sm btn-secondary" id="reg-add-btn">+ Добавить</button>
     </div>`;
     if (!regulars.length) {
-      html += '<p class="muted">Ученик или клиент с фиксированным днём и временем в неделю — заведи расписание один раз и поделись ссылкой, дальше занятия появляются сами.</p>';
+      html += `<p class="muted">${termCap("client", "клиент")} с фиксированным днём и временем в неделю — заведи расписание один раз и поделись ссылкой, дальше записи появляются сами.</p>`;
     } else {
       regulars.forEach((r) => {
         const whoLine = r.client_id
           ? clientDisplayName(r.client_name, null) + (r.client_username ? ` (@${escapeHtml(r.client_username)})` : "")
-          : "⏳ Ждём, пока ученик откроет ссылку" + (r.client_name ? ` (${escapeHtml(r.client_name)})` : "");
+          : `⏳ Ждём, пока ${term("client", "клиент")} откроет ссылку` + (r.client_name ? ` (${escapeHtml(r.client_name)})` : "");
         html += `<div class="list-item" style="align-items:flex-start; flex-direction:column; gap:8px">
           <div class="list-item-main">
             <div class="list-item-title">${DAYS_RU[r.weekday]}, ${r.time}${PROVIDER.is_business ? " · " + escapeHtml(r.staff_name || "") : ""}</div>
@@ -1406,11 +1416,11 @@
     const services = PROVIDER.servicesCache || [];
 
     openSheet(`
-      <div class="sheet-title">Постоянный ученик</div>
+      <div class="sheet-title">Постоянный ${term("client", "клиент")}</div>
       <div class="field">
-        <label class="field-label">Имя ученика (необязательно)</label>
+        <label class="field-label">Имя ${term("client_gen", "клиента")} (необязательно)</label>
         <input class="input" id="reg-name" type="text" maxlength="80" placeholder="Например: Аня" />
-        <div class="field-hint">Просто для тебя, до принятия ссылки. Когда ученик её откроет, увидим настоящее имя из Telegram.</div>
+        <div class="field-hint">Просто для тебя, до принятия ссылки. Когда ${term("client", "клиент")} её откроет, увидим настоящее имя из Telegram.</div>
       </div>
       ${showStaffSelect ? `<div class="field">
         <label class="field-label">Сотрудник</label>
@@ -1430,7 +1440,7 @@
         <label class="field-label">Услуга (необязательно)</label>
         <select class="input" id="reg-service"><option value="">Без услуги</option>${services.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("")}</select>
       </div>` : ""}
-      <div class="field-hint" style="margin-bottom:14px">Занятия появятся на 8 недель вперёд и будут продлеваться автоматически, пока абонемент активен.</div>
+      <div class="field-hint" style="margin-bottom:14px">${termCap("session_pl", "записи")} появятся на 8 недель вперёд и будут продлеваться автоматически, пока абонемент активен.</div>
       <button class="btn btn-primary btn-block" id="reg-submit">Создать и получить ссылку</button>
     `);
 
@@ -1467,7 +1477,7 @@
   function openInviteLinkSheet(link) {
     openSheet(`
       <div class="sheet-title">Ссылка готова 🎉</div>
-      <p class="muted" style="margin-bottom:10px">Отправь её ученику — как только он её откроет, расписание появится у него в приложении, а ты получишь уведомление.</p>
+      <p class="muted" style="margin-bottom:10px">Отправь её ${term("client_dat", "клиенту")} — как только он её откроет, расписание появится у него в приложении, а ты получишь уведомление.</p>
       <input class="input" id="reg-link" type="text" readonly value="${escapeHtml(link)}" style="margin-bottom:10px" />
       <button class="btn btn-primary btn-block" id="reg-link-copy">Скопировать ссылку</button>
     `);
