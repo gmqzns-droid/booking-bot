@@ -135,7 +135,7 @@ async def handle_regular_invite(message: Message, token: str) -> bool:
         return False
     if regular["client_id"] and regular["client_id"] != message.from_user.id:
         # Ссылку уже принял кто-то другой — не даём перехватить чужой абонемент.
-        await message.answer("⚠️ Эта ссылка на постоянную запись уже использована другим учеником.")
+        await message.answer("⚠️ Эта ссылка на постоянную запись уже использована другим человеком.")
         return True
 
     db.link_client(message.from_user.id, regular["trainer_id"], message.from_user.full_name, message.from_user.username)

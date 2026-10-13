@@ -34,27 +34,27 @@ _KEYWORDS: dict[str, list[str]] = {
 # session_pl (мн.ч.) / verb_book (глагол записи) / verb_book_cap
 _TERMS: dict[str, dict[str, str]] = {
     "fitness": dict(
-        specialist="тренер", specialist_to="к тренеру", client="клиент",
+        specialist="тренер", specialist_to="к тренеру", client="клиент", client_pl="клиенты", client_gen="клиента", client_dat="клиенту",
         session="тренировка", session_to="на тренировку", session_pl="тренировки",
         book_verb="записаться", cabinet="кабинет тренера",
     ),
     "beauty": dict(
-        specialist="мастер", specialist_to="к мастеру", client="клиент",
+        specialist="мастер", specialist_to="к мастеру", client="клиент", client_pl="клиенты", client_gen="клиента", client_dat="клиенту",
         session="процедура", session_to="на процедуру", session_pl="процедуры",
         book_verb="записаться", cabinet="кабинет мастера",
     ),
     "tutoring": dict(
-        specialist="репетитор", specialist_to="к репетитору", client="ученик",
+        specialist="репетитор", specialist_to="к репетитору", client="ученик", client_pl="ученики", client_gen="ученика", client_dat="ученику",
         session="занятие", session_to="на занятие", session_pl="занятия",
         book_verb="записаться", cabinet="кабинет репетитора",
     ),
     "medical": dict(
-        specialist="специалист", specialist_to="к специалисту", client="пациент",
+        specialist="специалист", specialist_to="к специалисту", client="пациент", client_pl="пациенты", client_gen="пациента", client_dat="пациенту",
         session="приём", session_to="на приём", session_pl="приёмы",
         book_verb="записаться", cabinet="кабинет специалиста",
     ),
     "other": dict(
-        specialist="специалист", specialist_to="к специалисту", client="клиент",
+        specialist="специалист", specialist_to="к специалисту", client="клиент", client_pl="клиенты", client_gen="клиента", client_dat="клиенту",
         session="визит", session_to="на визит", session_pl="визиты",
         book_verb="записаться", cabinet="кабинет специалиста",
     ),
